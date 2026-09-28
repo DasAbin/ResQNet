@@ -87,9 +87,12 @@ class Store:
             db.execute("CREATE TABLE IF NOT EXISTS seen (id TEXT PRIMARY KEY, fingerprint TEXT NOT NULL)")
             db.execute("CREATE TABLE IF NOT EXISTS pending (id TEXT PRIMARY KEY, payload TEXT NOT NULL, priority INTEGER NOT NULL, expires_at REAL NOT NULL)")
             db.execute("CREATE TABLE IF NOT EXISTS delivered (id TEXT PRIMARY KEY, payload TEXT NOT NULL, delivered_at REAL NOT NULL)")
+            db.execute("CREATE TABLE IF NOT EXISTS receipts (id TEXT NOT NULL, sender TEXT NOT NULL, result TEXT NOT NULL, PRIMARY KEY(id,sender))")
 
-    def receive(self, message: dict) -> str:
+    def receive(self, message: dict, sender: str | None = None) -> str:
         message = _message(message)
+        if sender is not None and (not isinstance(sender,str) or not sender or len(sender.encode("utf-8"))>64 or sender==self.id):
+            raise ProtocolError("invalid sender")
         if message["expires_at"] <= time.time():
             return "expired"
         # An ID is immutable. Reject a reused ID with altered contents.
@@ -97,14 +100,23 @@ class Store:
         with self.lock, self._db() as db:
             previous = db.execute("SELECT fingerprint FROM seen WHERE id=?", (message["id"],)).fetchone()
             if previous:
-                return "duplicate" if previous["fingerprint"] == canonical else "conflict"
+                if previous["fingerprint"] != canonical:
+                    return "conflict"
+                if sender is not None:
+                    receipt=db.execute("SELECT result FROM receipts WHERE id=? AND sender=?",(message["id"],sender)).fetchone()
+                    if receipt:
+                        return receipt["result"]
+                return "duplicate"
             db.execute("INSERT INTO seen VALUES (?,?)", (message["id"], canonical))
-            if message["destination"] == self.id:
+            result = "delivered" if message["destination"] == self.id else "stored"
+            if result == "delivered":
                 db.execute("INSERT INTO delivered VALUES (?,?,?)", (message["id"], canonical, time.time()))
-                return "delivered"
-            db.execute("INSERT INTO pending VALUES (?,?,?,?)",
-                       (message["id"], canonical, message["priority"], message["expires_at"]))
-            return "stored"
+            else:
+                db.execute("INSERT INTO pending VALUES (?,?,?,?)",
+                           (message["id"], canonical, message["priority"], message["expires_at"]))
+            if sender is not None:
+                db.execute("INSERT INTO receipts VALUES (?,?,?)",(message["id"],sender,result))
+            return result
 
     def pending(self) -> list[dict]:
         with self.lock, self._db() as db:
@@ -128,9 +140,9 @@ class Handler(socketserver.BaseRequestHandler):
         self.request.settimeout(3)
         try:
             frame = _read_frame(self.request)
-            if set(frame) != {"op", "message"} or frame["op"] != "offer":
+            if set(frame) != {"op", "message", "sender"} or frame["op"] != "offer":
                 raise ProtocolError("expected offer")
-            outcome = self.server.store.receive(frame["message"])
+            outcome = self.server.store.receive(frame["message"],sender=frame["sender"])
             self.request.sendall(_frame({"id": frame["message"].get("id"), "result": outcome}))
         except (ProtocolError, OSError, KeyError, TypeError) as exc:
             try:
@@ -149,10 +161,10 @@ class Server(socketserver.ThreadingTCPServer):
         super().__init__(address, Handler)
 
 
-def offer(host: str, port: int, message: dict, timeout: float = 2) -> str:
+def offer(host: str, port: int, message: dict, sender: str, timeout: float = 2) -> str:
     with socket.create_connection((host, port), timeout=timeout) as sock:
         sock.settimeout(timeout)
-        sock.sendall(_frame({"op": "offer", "message": _message(message)}))
+        sock.sendall(_frame({"op": "offer", "message": _message(message), "sender": sender}))
         result = _read_frame(sock)
     if result.get("id") != message["id"] or result.get("result") not in ("stored", "delivered", "duplicate", "conflict", "expired"):
         raise ProtocolError("invalid ACK")
@@ -162,14 +174,14 @@ def offer(host: str, port: int, message: dict, timeout: float = 2) -> str:
 def flush(store: Store, peer: tuple[str, int]) -> list[tuple[str, str]]:
     """Try each buffered message once. Retain custody on transport failure.
 
-    Only a newly stored or delivered ACK transfers custody. A duplicate ACK
-    may come from an upstream node and is not evidence of forward progress.
-    Conflict and expiry are also not custody acknowledgements.
+    A stored/delivered ACK is tied to this sender's accepted receipt. Retrying
+    after a lost ACK returns that receipt, even if the peer has since forwarded.
+    A generic duplicate from an upstream node is not custody proof.
     """
     outcomes = []
     for message in store.pending():
         try:
-            result = offer(*peer, message)
+            result = offer(*peer, message, sender=store.id)
         except (OSError, ProtocolError):
             result = "unreachable"
         if result in ("stored", "delivered"):
