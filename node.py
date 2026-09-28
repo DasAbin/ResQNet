@@ -6,6 +6,7 @@ limited to a private lab network. Never expose its listening port to the Interne
 from __future__ import annotations
 
 import argparse
+from contextlib import closing
 import json
 import socket
 import socketserver
@@ -84,7 +85,7 @@ class Store:
 
     def _setup(self):
         Path(self.path).parent.mkdir(parents=True, exist_ok=True)
-        with self._db() as db:
+        with closing(self._db()) as db, db:
             db.execute("PRAGMA journal_mode=WAL")
             db.execute("PRAGMA synchronous=FULL")
             db.execute("CREATE TABLE IF NOT EXISTS seen (id TEXT PRIMARY KEY, fingerprint TEXT NOT NULL)")
@@ -100,7 +101,9 @@ class Store:
             return "expired"
         # An ID is immutable. Reject a reused ID with altered contents.
         canonical = json.dumps(message, sort_keys=True, separators=(",", ":"))
-        with self.lock, self._db() as db:
+        with self.lock, closing(self._db()) as db, db:
+            # Serialize capacity and immutable-ID decisions across processes too.
+            db.execute("BEGIN IMMEDIATE")
             previous = db.execute("SELECT fingerprint FROM seen WHERE id=?", (message["id"],)).fetchone()
             if previous:
                 if previous["fingerprint"] != canonical:
@@ -126,17 +129,17 @@ class Store:
             return result
 
     def pending(self) -> list[dict]:
-        with self.lock, self._db() as db:
+        with self.lock, closing(self._db()) as db, db:
             db.execute("DELETE FROM pending WHERE expires_at<=?", (time.time(),))
             return [json.loads(row["payload"]) for row in db.execute(
                 "SELECT payload FROM pending ORDER BY priority DESC, expires_at ASC, id ASC")]
 
     def release(self, message_id: str):
-        with self.lock, self._db() as db:
+        with self.lock, closing(self._db()) as db, db:
             db.execute("DELETE FROM pending WHERE id=?", (message_id,))
 
     def status(self) -> dict:
-        with self.lock, self._db() as db:
+        with self.lock, closing(self._db()) as db, db:
             return {"node": self.id,
                     "pending": db.execute("SELECT count(*) FROM pending").fetchone()[0],
                     "delivered": db.execute("SELECT count(*) FROM delivered").fetchone()[0]}
