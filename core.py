@@ -4,7 +4,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from enum import IntEnum
 import math
-import random
+import hashlib
 from typing import Iterable
 
 
@@ -92,12 +92,16 @@ class DeliveryPredictor:
 
 
 class Simulator:
-    def __init__(self, nodes: Iterable[Node], links: Iterable[Link], seed: int = 0) -> None:
+    def __init__(self, nodes: Iterable[Node], links: Iterable[Link], seed: int = 0,
+                 policy: str = "adaptive") -> None:
         self.nodes = {n.id: n for n in nodes}
         self.links = list(links)
         if not self.nodes or any(l.a not in self.nodes or l.b not in self.nodes for l in self.links):
             raise ValueError("link endpoint missing or no nodes")
-        self.rng = random.Random(seed)
+        if policy not in ("adaptive", "snapshot_shortest"):
+            raise ValueError("unknown forwarding policy")
+        self.seed = seed
+        self.policy = policy
         self.predictor = DeliveryPredictor()
         self.tick_number = 0
         self.created: dict[str, Message] = {}
@@ -141,6 +145,22 @@ class Simulator:
                 break
         return float(len(self.nodes) + 1)
 
+    def _active_distance(self, start: str, end: str) -> float:
+        """Current active-network hop count; infinity means no complete path."""
+        if start == end:
+            return 0
+        frontier = {start}
+        visited = {start}
+        for hops in range(1, len(self.nodes) + 1):
+            frontier = {link.peer(n) for n in frontier for link in self.links
+                        if link.active and n in (link.a, link.b) and link.peer(n) not in visited}
+            if end in frontier:
+                return float(hops)
+            visited |= frontier
+            if not frontier:
+                break
+        return float("inf")
+
     def _score(self, source: Node, peer: Node, message: Message, link: Link) -> float:
         progress = self._distance(source.id, message.destination) - self._distance(peer.id, message.destination)
         p_success = self.predictor.predict(link, source.battery)
@@ -170,7 +190,14 @@ class Simulator:
                     peer = self.nodes[link.peer(source.id)]
                     if msg.id in peer.seen or len(peer.buffer) >= peer.capacity and peer.id != msg.destination:
                         continue
-                    score = self._score(source, peer, msg, link)
+                    if self.policy == "snapshot_shortest":
+                        current = self._active_distance(source.id, msg.destination)
+                        onward = self._active_distance(peer.id, msg.destination)
+                        if not math.isfinite(current) or onward >= current:
+                            continue
+                        score = 1.0 / (1.0 + onward)
+                    else:
+                        score = self._score(source, peer, msg, link)
                     if score > 0 or peer.id == msg.destination:
                         candidates.append((-int(msg.priority), -score, msg.id, source.id,
                                            peer.id, link))
@@ -188,7 +215,11 @@ class Simulator:
             dispatched.add(mid)
             source, peer = self.nodes[sid], self.nodes[pid]
             self.attempts += 1
-            success = self.rng.random() < (1 - link.loss) * link.reliability
+            # Keyed per opportunity, not traversal order: paired policies see the
+            # same loss outcome when they attempt the same contact in the same tick.
+            key = f"{self.seed}:{t}:{mid}:{min(link.a, link.b)}:{max(link.a, link.b)}"
+            u = int.from_bytes(hashlib.blake2b(key.encode(), digest_size=8).digest(), "big") / 2**64
+            success = u < (1 - link.loss) * link.reliability
             self.predictor.observe(link, source.battery, success)
             self.events.append(dict(tick=t, type="forward" if success else "lost",
                                     id=mid, source=sid, destination=pid))
