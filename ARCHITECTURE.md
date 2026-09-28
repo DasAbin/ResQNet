@@ -60,3 +60,7 @@ The socket node rejects a fresh relay with `full` once its pending buffer reache
 ## SQLite durability setting
 
 Socket-node SQLite connections explicitly request `PRAGMA synchronous=FULL`, including initial WAL setup. That asks SQLite to sync commits before an ACK is sent; it does not prove a specific disk or container volume honors flushes, nor does it address corrupted storage. A durable queue implementation still needs crash/fault-injection tests on its actual deployment substrate.
+
+## Concurrent custody writers
+
+Each socket-store operation now closes its SQLite connection after commit, and an incoming offer begins an immediate transaction before the immutable-ID and pending-capacity checks. This serializes decisions made by separate processes sharing one database file, rather than relying only on a per-object Python lock. A parallel two-store test covers the capacity race and retry of a rejected offer. It does not establish safe shared storage across hosts or prevent a malicious peer from exhausting capacity.
