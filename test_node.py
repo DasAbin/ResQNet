@@ -46,11 +46,22 @@ class NodeTests(unittest.TestCase):
 
     def test_idempotent_ack_and_conflicting_id(self):
         m=msg();bp=self.server(self.b)
-        self.assertEqual(offer(*bp,m),'stored')
-        self.assertEqual(offer(*bp,m),'duplicate')
+        self.assertEqual(offer(*bp,m,sender='A'),'stored')
+        self.assertEqual(offer(*bp,m,sender='A'),'stored')  # accepted receipt
+        self.assertEqual(offer(*bp,m,sender='C'),'duplicate')  # no receipt
         altered=copy.deepcopy(m);altered['body']='Different'
-        self.assertEqual(offer(*bp,altered),'conflict')
+        self.assertEqual(offer(*bp,altered,sender='A'),'conflict')
         self.assertEqual(self.b.status()['pending'],1)
+
+    def test_lost_ack_receipt_survives_restart_and_forwarding(self):
+        m=msg(); self.a.receive(m)
+        self.assertEqual(self.b.receive(m,sender='A'),'stored')  # ACK lost
+        restarted=Store(str(Path(self.tmp.name)/'b.db'),'B')
+        cp=self.server(self.c)
+        self.assertEqual(flush(restarted,cp),[("m1","delivered")])
+        bp=self.server(restarted)
+        self.assertEqual(flush(self.a,bp),[("m1","stored")])
+        self.assertEqual(self.a.status()['pending'],0)
 
     def test_duplicate_upstream_does_not_erase_custody(self):
         m=msg(); self.a.receive(m); self.b.receive(m)
@@ -64,9 +75,9 @@ class NodeTests(unittest.TestCase):
     def test_invalid_and_expired_messages(self):
         bp=self.server(self.b)
         m=msg();m['priority']=5
-        with self.assertRaises(ValueError):offer(*bp,m)
+        with self.assertRaises(ValueError):offer(*bp,m,sender='A')
         m=msg();m['expires_at']=time.time()-1
-        self.assertEqual(offer(*bp,m),'expired')
+        self.assertEqual(offer(*bp,m,sender='A'),'expired')
         self.assertEqual(self.b.status()['pending'],0)
         with socket.create_connection(bp) as sock:
             sock.sendall(b'{' + b'x'*9000 + b'\n')
