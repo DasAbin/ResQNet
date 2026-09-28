@@ -78,6 +78,7 @@ class Store:
 
     def _db(self):
         connection = sqlite3.connect(self.path, timeout=10)
+        connection.execute("PRAGMA synchronous=FULL")
         connection.row_factory = sqlite3.Row
         return connection
 
@@ -85,6 +86,7 @@ class Store:
         Path(self.path).parent.mkdir(parents=True, exist_ok=True)
         with self._db() as db:
             db.execute("PRAGMA journal_mode=WAL")
+            db.execute("PRAGMA synchronous=FULL")
             db.execute("CREATE TABLE IF NOT EXISTS seen (id TEXT PRIMARY KEY, fingerprint TEXT NOT NULL)")
             db.execute("CREATE TABLE IF NOT EXISTS pending (id TEXT PRIMARY KEY, payload TEXT NOT NULL, priority INTEGER NOT NULL, expires_at REAL NOT NULL)")
             db.execute("CREATE TABLE IF NOT EXISTS delivered (id TEXT PRIMARY KEY, payload TEXT NOT NULL, delivered_at REAL NOT NULL)")
