@@ -46,6 +46,8 @@ class SimulationTests(unittest.TestCase):
             sim.inject(Message("x", "A", "C", 0, 2))
         sim.tick()
         sim.tick()
+        self.assertIn("x", sim.nodes["A"].buffer)
+        sim.tick()
         self.assertFalse(sim.nodes["A"].buffer)
         self.assertFalse(sim.delivered)
 
@@ -56,6 +58,12 @@ class SimulationTests(unittest.TestCase):
             sim.inject(Message("x", "unknown", "C", 0, 3))
         with self.assertRaises(ValueError):
             Link("A", "B", loss=1.2)
+
+    def test_ttl_one_allows_first_hop(self):
+        sim = Simulator([Node("A"), Node("B")], [Link("A", "B")])
+        sim.inject(Message("urgent", "A", "B", 0, 1))
+        sim.tick()
+        self.assertEqual(sim.delivered["urgent"], 1)
 
     def test_reproducible_seed(self):
         def run():
