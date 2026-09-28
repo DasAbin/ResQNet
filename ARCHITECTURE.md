@@ -52,3 +52,7 @@ The simulator does not protect authenticity, confidentiality, or sender identity
 ## Custody receipt fix
 
 The TCP node's SQLite `receipts` table stores an accepted result keyed by message ID and claimed sender. A retry by the same sender returns its durable receipt, including after the receiver has forwarded onward, closing the lost-ACK ambiguity. A different sender sees `duplicate`, so an upstream node does not give false custody proof. The wire's sender field is not authenticated, so this only preserves correctness among cooperating lab nodes. It is not a security guarantee. `test_node.py` covers restart plus forward-before-retry and an upstream duplicate.
+
+## Bounded buffer
+
+The socket node rejects a fresh relay with `full` once its pending buffer reaches 1,000 messages. It does not write a seen ID or receipt for that rejected offer. The source retains custody and can retry later; `test_node.py` verifies it. Expired pending entries are cleared before the capacity check. The bound is per node, not per sender or priority; in an untrusted network a peer could exhaust it. A wildcard bind needs an explicit container-lab flag, but there is still no authentication, rate limit, or encryption.
