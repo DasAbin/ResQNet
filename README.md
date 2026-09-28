@@ -39,3 +39,27 @@ The interactive local API docs are at `http://127.0.0.1:8000/docs`. Send a JSON 
 ## Dashboard
 
 Open `http://127.0.0.1:8000/` after starting the API. The dependency-free dashboard sends a bounded synthetic A-B-C scenario to the API and animates the resulting event trace. Configure the link recovery tick, run length, and RNG seed. The graphic and metrics are derived from the API response, not invented static values. It is a local web UI, not a deployed cloud service.
+
+## Experimental socket nodes
+
+`node.py` is a separate, **trusted-lab-only** TCP custody-transfer prototype. It receives a size-bounded JSON offer, commits it to SQLite before ACK, retries buffered transfers when a configured peer becomes reachable, and keeps an immutable ID history to avoid double delivery. Example with three shells:
+
+```bash
+python3 node.py --id A --db /tmp/resq-a.db --port 9101 --peer 127.0.0.1:9102
+python3 node.py --id B --db /tmp/resq-b.db --port 9102 --peer 127.0.0.1:9103
+python3 node.py --id C --db /tmp/resq-c.db --port 9103
+```
+
+To inject a synthetic message into A's local store, in a fourth shell:
+
+```bash
+python3 - <<'PY'
+from node import Store
+import time
+print(Store('/tmp/resq-a.db','A').receive({'id':'demo-1','source':'A','destination':'C',
+      'body':'Synthetic SOS (not a real distress call)','priority':2,
+      'expires_at':time.time()+300}))
+PY
+```
+
+Start A and B, then start C later to demonstrate buffering across an outage. In another shell, inspect `Store('/tmp/resq-c.db','C').status()` from Python. Run `python3 -m unittest discover -v` to exercise protocol, restart, expiry, malformed input, and custody tests. This prototype has **no encryption, peer authentication, anti-replay across IDs, admission quotas, or disaster-radio transport**. Bind only to localhost/private isolated labs, never public interfaces or real users. Its predictor is in the simulator, not yet wired to live socket peer selection.
