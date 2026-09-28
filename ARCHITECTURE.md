@@ -48,3 +48,7 @@ The simulator does not protect authenticity, confidentiality, or sender identity
 ## Container lab scaffold
 
 `Dockerfile` and `compose.yaml` define three TCP nodes on an internal Docker network with no host port mappings, per-node volumes, non-root execution, dropped capabilities, and read-only root filesystems. They are a packaging scaffold, **not** a validated cloud deployment. Docker was unavailable in the build environment; the Compose startup and persistent-volume behavior have not been tested. `--host 0.0.0.0` is scoped inside the isolated container network; exposing those ports to a public or untrusted network would be unsafe because the protocol has no authentication or encryption.
+
+## Custody receipt fix
+
+The TCP node's SQLite `receipts` table stores an accepted result keyed by message ID and claimed sender. A retry by the same sender returns its durable receipt, including after the receiver has forwarded onward, closing the lost-ACK ambiguity. A different sender sees `duplicate`, so an upstream node does not give false custody proof. The wire's sender field is not authenticated, so this only preserves correctness among cooperating lab nodes. It is not a security guarantee. `test_node.py` covers restart plus forward-before-retry and an upstream duplicate.
