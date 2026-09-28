@@ -56,3 +56,7 @@ The TCP node's SQLite `receipts` table stores an accepted result keyed by messag
 ## Bounded buffer
 
 The socket node rejects a fresh relay with `full` once its pending buffer reaches 1,000 messages. It does not write a seen ID or receipt for that rejected offer. The source retains custody and can retry later; `test_node.py` verifies it. Expired pending entries are cleared before the capacity check. The bound is per node, not per sender or priority; in an untrusted network a peer could exhaust it. A wildcard bind needs an explicit container-lab flag, but there is still no authentication, rate limit, or encryption.
+
+## SQLite durability setting
+
+Socket-node SQLite connections explicitly request `PRAGMA synchronous=FULL`, including initial WAL setup. That asks SQLite to sync commits before an ACK is sent; it does not prove a specific disk or container volume honors flushes, nor does it address corrupted storage. A durable queue implementation still needs crash/fault-injection tests on its actual deployment substrate.
