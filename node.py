@@ -16,6 +16,7 @@ from pathlib import Path
 
 MAX_FRAME = 8192
 MAX_BODY = 4096
+MAX_PENDING = 1000
 
 
 class ProtocolError(ValueError):
@@ -107,8 +108,12 @@ class Store:
                     if receipt:
                         return receipt["result"]
                 return "duplicate"
-            db.execute("INSERT INTO seen VALUES (?,?)", (message["id"], canonical))
             result = "delivered" if message["destination"] == self.id else "stored"
+            if result == "stored":
+                db.execute("DELETE FROM pending WHERE expires_at<=?", (time.time(),))
+                if db.execute("SELECT count(*) FROM pending").fetchone()[0] >= MAX_PENDING:
+                    return "full"
+            db.execute("INSERT INTO seen VALUES (?,?)", (message["id"], canonical))
             if result == "delivered":
                 db.execute("INSERT INTO delivered VALUES (?,?,?)", (message["id"], canonical, time.time()))
             else:
@@ -166,7 +171,7 @@ def offer(host: str, port: int, message: dict, sender: str, timeout: float = 2) 
         sock.settimeout(timeout)
         sock.sendall(_frame({"op": "offer", "message": _message(message), "sender": sender}))
         result = _read_frame(sock)
-    if result.get("id") != message["id"] or result.get("result") not in ("stored", "delivered", "duplicate", "conflict", "expired"):
+    if result.get("id") != message["id"] or result.get("result") not in ("stored", "delivered", "duplicate", "conflict", "expired", "full"):
         raise ProtocolError("invalid ACK")
     return result["result"]
 
@@ -198,9 +203,13 @@ def main() -> None:
     parser.add_argument("--port", type=int, required=True)
     parser.add_argument("--peer", action="append", default=[], help="host:port")
     parser.add_argument("--interval", type=float, default=2)
+    parser.add_argument("--allow-container-bind", action="store_true",
+                        help="Permit wildcard bind only inside isolated, unpublished container network")
     args = parser.parse_args()
     if args.port <= 0 or args.port > 65535 or args.interval < .1:
         parser.error("invalid port or interval")
+    if args.host == "0.0.0.0" and not args.allow_container_bind:
+        parser.error("wildcard bind requires --allow-container-bind; use only in isolated lab")
     peers = []
     for peer in args.peer:
         try:
