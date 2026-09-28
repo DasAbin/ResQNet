@@ -93,6 +93,21 @@ class NodeTests(unittest.TestCase):
             self.b.release('first')
             self.assertEqual(self.b.receive(msg('second', 'C'), sender='A'), 'stored')
 
+    def test_parallel_store_instances_share_capacity_and_id_decision(self):
+        from unittest.mock import patch
+        from concurrent.futures import ThreadPoolExecutor
+        db_path = str(Path(self.tmp.name) / 'shared.db')
+        first, second = Store(db_path, 'B'), Store(db_path, 'B')
+        with patch('node.MAX_PENDING', 1), ThreadPoolExecutor(max_workers=2) as pool:
+            outcomes = list(pool.map(lambda pair: pair[0].receive(pair[1], sender='A'),
+                                     [(first, msg('one')), (second, msg('two'))]))
+        self.assertEqual(sorted(outcomes), ['full', 'stored'])
+        self.assertEqual(first.status()['pending'], 1)
+        rejected = 'one' if outcomes[0] == 'full' else 'two'
+        accepted = 'two' if rejected == 'one' else 'one'
+        first.release(accepted)
+        self.assertEqual(second.receive(msg(rejected), sender='A'), 'stored')
+
     def test_priority_order_and_expiration(self):
         lo=msg('low');lo['priority']=0
         hi=msg('high');hi['priority']=2
