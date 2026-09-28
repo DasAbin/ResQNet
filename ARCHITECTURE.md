@@ -44,3 +44,7 @@ The simulator does not protect authenticity, confidentiality, or sender identity
 ## Benchmark boundary
 
 `benchmark.py` compares `adaptive` with `snapshot_shortest` under identical synthetic fault schedules. Keyed contact outcomes make shared attempts comparable across policies regardless of traversal order. Development seeds 10000-10099 and held-out seeds 20000-20499 are disjoint. Results and caveats are recorded in `BENCHMARK.md`. The observed delivery-ratio difference is small and uncertain, while SOS delivery and delivered-message latency do not favor the adaptive policy in that run. This prevents an unjustified "AI always improves delivery" claim.
+
+## Container lab scaffold
+
+`Dockerfile` and `compose.yaml` define three TCP nodes on an internal Docker network with no host port mappings, per-node volumes, non-root execution, dropped capabilities, and read-only root filesystems. They are a packaging scaffold, **not** a validated cloud deployment. Docker was unavailable in the build environment; the Compose startup and persistent-volume behavior have not been tested. `--host 0.0.0.0` is scoped inside the isolated container network; exposing those ports to a public or untrusted network would be unsafe because the protocol has no authentication or encryption.
