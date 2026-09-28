@@ -6,6 +6,8 @@ simulator; the service deliberately retains no message bodies or sender identity
 from __future__ import annotations
 
 from fastapi import FastAPI, HTTPException
+from fastapi.responses import FileResponse
+from pathlib import Path
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from core import Link, Message, Node, Priority, Simulator
 
@@ -123,3 +125,8 @@ def run_scenario(scenario: RunInput):
 @app.get("/health")
 def health():
     return {"status": "ok", "mode": "simulation_only"}
+
+
+@app.get("/", include_in_schema=False)
+def dashboard():
+    return FileResponse(Path(__file__).with_name("dashboard.html"))
