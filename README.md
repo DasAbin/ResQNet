@@ -63,3 +63,7 @@ PY
 ```
 
 Start A and B, then start C later to demonstrate buffering across an outage. In another shell, inspect `Store('/tmp/resq-c.db','C').status()` from Python. Run `python3 -m unittest discover -v` to exercise protocol, restart, expiry, malformed input, and custody tests. This prototype has **no encryption, peer authentication, anti-replay across IDs, admission quotas, or disaster-radio transport**. Bind only to localhost/private isolated labs, never public interfaces or real users. Its predictor is in the simulator, not yet wired to live socket peer selection.
+
+## Comparative benchmark
+
+`python3 benchmark.py --first-seed 20000 --seeds 500 > benchmark-results.json` compares the adaptive policy to an active-path shortest-hop comparator on matched synthetic scenarios. See [BENCHMARK.md](BENCHMARK.md) for exact held-out results, uncertainty, and why they do **not** establish superiority or real-world safety. The benchmark only uses the simulator, not the socket prototype.
