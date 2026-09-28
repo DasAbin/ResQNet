@@ -5,7 +5,7 @@ import threading
 import time
 import unittest
 from pathlib import Path
-from node import Server, Store, _frame, _read_frame, flush, offer
+from node import Server, Store, MAX_PENDING, _frame, _read_frame, flush, offer
 
 
 def msg(id='m1', destination='C'):
@@ -83,6 +83,15 @@ class NodeTests(unittest.TestCase):
             sock.sendall(b'{' + b'x'*9000 + b'\n')
             data=_read_frame(sock)
             self.assertIn('error',data)
+
+    def test_full_buffer_does_not_poison_seen_id(self):
+        from unittest.mock import patch
+        with patch('node.MAX_PENDING', 1):
+            self.assertEqual(self.b.receive(msg('first', 'C'), sender='A'), 'stored')
+            self.assertEqual(self.b.receive(msg('second', 'C'), sender='A'), 'full')
+            self.assertEqual(self.b.status()['pending'], 1)
+            self.b.release('first')
+            self.assertEqual(self.b.receive(msg('second', 'C'), sender='A'), 'stored')
 
     def test_priority_order_and_expiration(self):
         lo=msg('low');lo['priority']=0
