@@ -22,3 +22,16 @@ python3 example.py
 3. Dockerized Python socket nodes with durable buffers, bounded retries and authenticated protocol messages.
 
 The project combines networking behavior with an online predictor and a planned cloud/edge telemetry split. It does not claim novel disaster-network research or production safety.
+
+## Local API
+
+Install dependencies into a virtual environment and launch only on loopback:
+
+```bash
+python3 -m venv .venv
+.venv/bin/pip install -r requirements.txt httpx
+.venv/bin/python -m unittest discover -v
+.venv/bin/uvicorn api:app --host 127.0.0.1 --port 8000
+```
+
+The interactive local API docs are at `http://127.0.0.1:8000/docs`. Send a JSON scenario to `POST /v1/simulations`: `nodes`, `links`, `messages`, optional `changes`, `ticks`, and `seed`. The response has events, buffers, and metrics. Request sizes and computational work are bounded. The API has no authentication or abuse controls and must **not** be exposed on a public network. `httpx` is a test-only dependency for FastAPI's TestClient.
