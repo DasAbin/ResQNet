@@ -77,3 +77,7 @@ After installing Docker Compose, try `docker compose up --build` on a local lab 
 The socket receipt protocol persists `(message ID, sender node, accepted result)` alongside each accepted message. A retry after a lost ACK gets the same `stored`/`delivered` receipt, even after that peer forwards onward; an unrelated sender still gets a generic duplicate. This fixes a lab failure where the sender otherwise retained the message until expiry after a lost ACK. Sender IDs are *not authenticated*, so a malicious node could forge one; this is not suitable for an untrusted network.
 
 The socket node now bounds its pending buffer at 1,000 messages: a full buffer responds `full` without recording the rejected ID, so a later retry can succeed. The sender retains custody on `full`. Wildcard bind requires the explicit `--allow-container-bind` flag and is used only by the internal Compose lab; this flag is a reminder, **not** a security mechanism. The server still lacks admission rate limits, peer authentication, encryption, and a verified Docker runtime.
+
+## Loopback process integration
+
+`test_e2e.py` starts three actual TCP node processes on loopback using separate temporary SQLite files. It injects a synthetic A-to-C message while B and C are offline, waits for B to accept custody after it starts, then brings C online and checks delivery and release at B. `python3 -m unittest test_e2e -v` runs this process-level check. It does not exercise Docker, radios, malicious peers, crash consistency or network-wide routing.
