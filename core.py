@@ -154,7 +154,7 @@ class Simulator:
         t = self.tick_number
         for node in self.nodes.values():
             for mid, msg in list(node.buffer.items()):
-                if t - msg.created >= msg.ttl or mid in self.delivered:
+                if t - msg.created > msg.ttl or mid in self.delivered:
                     del node.buffer[mid]
                     self.events.append(dict(tick=t, type="expired" if mid not in self.delivered else "cleared",
                                             id=mid, node=node.id))
