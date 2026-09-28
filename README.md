@@ -2,7 +2,7 @@
 
 An experimental opportunistic disaster-network simulator: messages are buffered across partitions and forwarded when contacts return, with priority scheduling and an adaptive link-success estimate.
 
-**Status:** simulator core, not a deployable emergency network. No sockets, containers, API, UI, or real ML training pipeline are shipped yet. Never use this for a real distress call.
+**Status:** simulator core, local FastAPI and dashboard, not a deployable emergency network. No real socket nodes, containers, trained disaster predictor, or cloud service are shipped yet. Never use this for a real distress call.
 
 ## Quick start
 
@@ -18,7 +18,7 @@ python3 example.py
 ## Next milestones
 
 1. Scenario schema, repeatable benchmark harness, congestion/latency modeling, and baseline comparisons with held-out seeds.
-2. FastAPI run control and React topology/event dashboard.
+2. Harden and extend the local API and dashboard; decide whether a React client adds value.
 3. Dockerized Python socket nodes with durable buffers, bounded retries and authenticated protocol messages.
 
 The project combines networking behavior with an online predictor and a planned cloud/edge telemetry split. It does not claim novel disaster-network research or production safety.
@@ -35,3 +35,7 @@ python3 -m venv .venv
 ```
 
 The interactive local API docs are at `http://127.0.0.1:8000/docs`. Send a JSON scenario to `POST /v1/simulations`: `nodes`, `links`, `messages`, optional `changes`, `ticks`, and `seed`. The response has events, buffers, and metrics. Request sizes and computational work are bounded. The API has no authentication or abuse controls and must **not** be exposed on a public network. `httpx` is a test-only dependency for FastAPI's TestClient.
+
+## Dashboard
+
+Open `http://127.0.0.1:8000/` after starting the API. The dependency-free dashboard sends a bounded synthetic A-B-C scenario to the API and animates the resulting event trace. Configure the link recovery tick, run length, and RNG seed. The graphic and metrics are derived from the API response, not invented static values. It is a local web UI, not a deployed cloud service.
