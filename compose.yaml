@@ -1,0 +1,40 @@
+# Unauthenticated trusted-lab example. No ports are published to the host.
+# Docker network is internal; only synthetic messages belong here.
+services:
+  node-a:
+    build: .
+    command: ["python", "node.py", "--id", "A", "--db", "/data/node.db", "--host", "0.0.0.0", "--port", "9101", "--peer", "node-b:9102"]
+    networks: [lab]
+    volumes: ["node-a-data:/data"]
+    init: true
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    tmpfs: ["/tmp"]
+  node-b:
+    build: .
+    command: ["python", "node.py", "--id", "B", "--db", "/data/node.db", "--host", "0.0.0.0", "--port", "9102", "--peer", "node-c:9103"]
+    networks: [lab]
+    volumes: ["node-b-data:/data"]
+    init: true
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    tmpfs: ["/tmp"]
+  node-c:
+    build: .
+    command: ["python", "node.py", "--id", "C", "--db", "/data/node.db", "--host", "0.0.0.0", "--port", "9103"]
+    networks: [lab]
+    volumes: ["node-c-data:/data"]
+    init: true
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    tmpfs: ["/tmp"]
+networks:
+  lab:
+    internal: true
+volumes:
+  node-a-data:
+  node-b-data:
+  node-c-data:
