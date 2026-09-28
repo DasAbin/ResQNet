@@ -36,3 +36,7 @@ The simulator does not protect authenticity, confidentiality, or sender identity
 ## Dashboard milestone
 
 `dashboard.html` is served by the FastAPI root route. It builds a small scenario, calls the run endpoint, and animates event frames and metrics in the browser. It is deliberately self-contained for offline/local use; React remains a possible future client but is not part of this build. The HTML UI is not a security boundary and its input checks do not replace backend validation.
+
+## Trusted-lab socket node milestone
+
+`node.py` implements a distinct TCP experiment. Each node has a SQLite WAL store and a configured peer list. A length-bounded newline JSON offer is committed before the receiver sends an ACK. The source drops custody only after a fresh `stored` or `delivered` ACK. Lost ACK can result in duplicate attempts, but the receiver's seen-ID table makes them idempotent. A duplicate ACK does **not** release custody because it can come from an upstream node. `test_node.py` runs real loopback TCP servers and checks restart persistence and recovery. This is not integrated with the simulator's learned policy; peer selection is static. There is no authentication, encryption, node-discovery, multi-hop routing convergence, location service or public-facing deployment; keep traffic inside an isolated trusted lab. Containers can package these nodes later, but Docker itself is not yet shipped.
