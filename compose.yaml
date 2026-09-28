@@ -3,7 +3,7 @@
 services:
   node-a:
     build: .
-    command: ["python", "node.py", "--id", "A", "--db", "/data/node.db", "--host", "0.0.0.0", "--port", "9101", "--peer", "node-b:9102"]
+    command: ["python", "node.py", "--id", "A", "--db", "/data/node.db", "--host", "0.0.0.0", "--allow-container-bind", "--port", "9101", "--peer", "node-b:9102"]
     networks: [lab]
     volumes: ["node-a-data:/data"]
     init: true
@@ -13,7 +13,7 @@ services:
     tmpfs: ["/tmp"]
   node-b:
     build: .
-    command: ["python", "node.py", "--id", "B", "--db", "/data/node.db", "--host", "0.0.0.0", "--port", "9102", "--peer", "node-c:9103"]
+    command: ["python", "node.py", "--id", "B", "--db", "/data/node.db", "--host", "0.0.0.0", "--allow-container-bind", "--port", "9102", "--peer", "node-c:9103"]
     networks: [lab]
     volumes: ["node-b-data:/data"]
     init: true
@@ -23,7 +23,7 @@ services:
     tmpfs: ["/tmp"]
   node-c:
     build: .
-    command: ["python", "node.py", "--id", "C", "--db", "/data/node.db", "--host", "0.0.0.0", "--port", "9103"]
+    command: ["python", "node.py", "--id", "C", "--db", "/data/node.db", "--host", "0.0.0.0", "--allow-container-bind", "--port", "9103"]
     networks: [lab]
     volumes: ["node-c-data:/data"]
     init: true
