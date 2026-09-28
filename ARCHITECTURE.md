@@ -28,3 +28,7 @@ Metrics: generated/delivered count, delivery ratio, delay among delivered messag
 ## Threat model and cloud/edge roadmap
 
 The simulator does not protect authenticity, confidentiality, or sender identity. Do not put real distress or personal data into demos. A production design would authenticate nodes and encrypt messages end-to-end, enforce TTL/size and per-sender quotas, and avoid retaining precise location by default. Edge nodes should continue operating when the cloud telemetry service is offline; cloud storage can aggregate opt-in summaries but must never be the required forwarding authority. Socket transport and containers are planned work, not present features.
+
+## Local API milestone
+
+`api.py` runs a fresh scenario per request. It validates node IDs, undirected links, messages, time bounds and a computation budget, rejects unknown fields, and returns an event log. It has no persistence, auth, rate limiting, or deployment configuration and should be bound to loopback only. `test_api.py` covers partition recovery, input validation, reproducibility, isolation and budget limits. The dashboard is still future work.
