@@ -32,3 +32,7 @@ The simulator does not protect authenticity, confidentiality, or sender identity
 ## Local API milestone
 
 `api.py` runs a fresh scenario per request. It validates node IDs, undirected links, messages, time bounds and a computation budget, rejects unknown fields, and returns an event log. It has no persistence, auth, rate limiting, or deployment configuration and should be bound to loopback only. `test_api.py` covers partition recovery, input validation, reproducibility, isolation and budget limits. The dashboard is still future work.
+
+## Dashboard milestone
+
+`dashboard.html` is served by the FastAPI root route. It builds a small scenario, calls the run endpoint, and animates event frames and metrics in the browser. It is deliberately self-contained for offline/local use; React remains a possible future client but is not part of this build. The HTML UI is not a security boundary and its input checks do not replace backend validation.
