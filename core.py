@@ -114,7 +114,7 @@ class Simulator:
         self.created[message.id] = message
         if message.source == message.destination:
             self.delivered[message.id] = self.tick_number
-            self.events.append(dict(tick=self.tick_number, type="delivered", id=message.id,
+            self.events.append(dict(tick=message.created, type="delivered", id=message.id,
                                     node=message.destination))
         else:
             node = self.nodes[message.source]
@@ -122,7 +122,7 @@ class Simulator:
                 raise ValueError("source buffer full")
             node.buffer[message.id] = message
             node.seen.add(message.id)
-            self.events.append(dict(tick=self.tick_number, type="created", id=message.id,
+            self.events.append(dict(tick=message.created, type="created", id=message.id,
                                     node=message.source))
 
     def _distance(self, start: str, end: str) -> float:
