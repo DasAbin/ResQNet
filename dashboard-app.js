@@ -125,6 +125,7 @@ function boot(){const sel=$("#preset");sel.innerHTML=PRESETS.map((p,i)=>`<option
  $("#fwd").onclick=()=>{stop();if(runs.adaptive&&tick<cur.ticks){go(tick+1);if(tick>=cur.ticks)verdict()}};
  $("#scrub").oninput=e=>{stop();if(runs.adaptive){tick=+e.target.value;$("#feed").innerHTML="";for(let t=0;t<=tick;t++)log(t);draw(tick);if(tick>=cur.ticks)verdict()}};
  const q=new URLSearchParams(location.search);
+ if(!q.has("auto")&&!q.has("still"))run();  // demonstrate the simulation on first load
  if(q.has("auto")){if(q.has("preset")){sel.value=q.get("preset");fillPreset(PRESETS[+sel.value])}
   if(q.has("compare"))$("#compare").checked=true;
   run().then(()=>{stop();const t=+(q.get("tick")||cur.ticks);tick=t;$("#feed").innerHTML="";for(let i=0;i<=t;i++)log(i);draw(t);verdict()})}}
