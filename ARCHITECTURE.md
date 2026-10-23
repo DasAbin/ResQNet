@@ -6,18 +6,18 @@ ResQNet is a course-scale experiment, **not** a real emergency communications se
 
 ## Data path
 
-`Message` enters a node buffer -> at each discrete tick an active contact offers a forwarding opportunity -> candidate links are ranked by destination progress, an online logistic estimate of link success, urgency, latency, congestion and buffer pressure -> one hop attempts delivery -> failures remain buffered -> successful forwarding transfers custody -> recipient acknowledgement is represented by the delivered event. TTL expires old copies. A fixed RNG seed reproduces loss events.
+`Message` enters a node buffer -> at each discrete tick an active contact offers a forwarding opportunity -> candidate links are ranked by destination progress, an online logistic estimate of link success, urgency, latency, congestion and buffer pressure -> one hop attempts delivery -> failures remain buffered -> successful forwarding transfers custody -> recipient acknowledgement is represented by the delivered event. TTL expires old copies. A fixed RNG seed reproduces loss events. The adaptive policy never hands a message to a node physically farther from the destination: with a static topology and no mobility model, backward handoffs only stranded traffic on leaf relays (see BENCHMARK.md, 2026-10-23 policy change). Every dispatch emits a `decision` event with the winning score components and the passed-over alternatives, so the dashboard can explain each hop; the API also returns the estimator's feature weights and sample count.
 
 The model currently uses custody transfer (single copy) and per-node seen IDs. These prevent loops and flooding but can strand a message after a topology change. A later protocol should add durable custody acknowledgements, retry-aware deduplication, signed message IDs, and bounded multi-copy strategies. Current link prediction is an online logistic estimator updated from simulated outcomes. It is *not* a trained disaster predictor. Its priors are synthetic link fields; evaluation must separate training and testing scenarios.
 
 ## Module boundaries
 
-- `core.py`: data contracts, deterministic simulator, forwarding policy and link-success estimator; standard library only.
-- `test_core.py`: deterministic behavior and edge-condition tests.
-- Planned `api/`: FastAPI service with scenario validation, run IDs and event/metrics endpoints.
-- Planned `web/`: React dashboard showing topology, link failures, message movement and metrics.
-- Planned `node/`: socket protocol between Docker nodes, with bounded payloads and acknowledgements.
-- Planned `experiments/`: reproducible baselines (shortest available path and epidemic forwarding), seeds, held-out fault schedules and comparable message loads.
+- `core.py`: data contracts, deterministic simulator, adaptive and snapshot-shortest forwarding policies, link-success estimator, per-hop decision explanations; standard library only.
+- `api.py`: local FastAPI service; validated `POST /v1/simulations` (scenario + `policy`) returning events, buffers, metrics with predictor state; serves the dashboard assets on loopback.
+- `dashboard.html` + `dashboard.css` + `dashboard-data.js` + `dashboard-render.js` + `dashboard-app.js`: dependency-free dashboard. Flood-rescue presets (all synthetic people/places), message and outage editors, timeline playback reconstructed from API events, per-hop "why" inspector, policy A/B comparison, estimator panel.
+- `node.py`: separate trusted-lab TCP custody-transfer prototype between OS processes, with bounded payloads, SQLite persistence and receipts.
+- `benchmark.py`: paired adaptive-vs-baseline comparison on held-out seeds; results in BENCHMARK.md.
+- `test_*.py`: unit, API, benchmark, Compose-static and loopback process tests (35 tests).
 
 ## Boundaries and evaluation
 
