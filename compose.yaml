@@ -1,10 +1,12 @@
-# Unauthenticated trusted-lab example. No ports are published to the host.
-# Docker network is internal; only synthetic messages belong here.
+# Trusted-lab example with a shared HMAC key. No ports are published to the host.
+# Docker network is internal; only synthetic messages belong here. The key below
+# is a lab demo value, not a real secret; rotate it for any other network.
 services:
   node-a:
     build: .
     command: ["python", "node.py", "--id", "A", "--db", "/data/node.db", "--host", "0.0.0.0", "--allow-container-bind", "--port", "9101", "--peer", "node-b:9102"]
     networks: [lab]
+    environment: ["RESQNET_LAB_KEY=resqnet-lab-demo-key"]
     volumes: ["node-a-data:/data"]
     init: true
     read_only: true
@@ -15,6 +17,7 @@ services:
     build: .
     command: ["python", "node.py", "--id", "B", "--db", "/data/node.db", "--host", "0.0.0.0", "--allow-container-bind", "--port", "9102", "--peer", "node-c:9103"]
     networks: [lab]
+    environment: ["RESQNET_LAB_KEY=resqnet-lab-demo-key"]
     volumes: ["node-b-data:/data"]
     init: true
     read_only: true
@@ -25,6 +28,7 @@ services:
     build: .
     command: ["python", "node.py", "--id", "C", "--db", "/data/node.db", "--host", "0.0.0.0", "--allow-container-bind", "--port", "9103"]
     networks: [lab]
+    environment: ["RESQNET_LAB_KEY=resqnet-lab-demo-key"]
     volumes: ["node-c-data:/data"]
     init: true
     read_only: true
