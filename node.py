@@ -3,11 +3,13 @@
 Not an emergency service. Run it only on a private lab network and never expose
 its listening port to the Internet. With --key (or RESQNET_LAB_KEY) offers and
 ACKs carry an HMAC-SHA256 tag so lab peers share one secret, and message bodies
-travel encrypted on the wire: a 16-byte random nonce per offer, a keystream of
-HMAC-SHA256 blocks in counter mode, and the tag computed over the ciphertext
-(encrypt-then-MAC). The construction is stdlib-only so the container image
-stays dependency-free. Without a key the wire is unauthenticated and plaintext.
-The shared key deters casual forgery and eavesdropping inside a lab; it is one
+travel with AES-256-GCM authenticated encryption (the `cryptography` package):
+a fresh 12-byte random nonce per offer, the message metadata bound as
+associated data, and the body key derived from the lab key with HKDF-SHA256.
+The AEAD tag makes tampered or wrong-key ciphertexts fail deterministically,
+and the server rejects byte-exact replayed offer frames from a bounded cache of
+recent tags. Without a key the wire is unauthenticated and plaintext. The
+shared key deters casual forgery and eavesdropping inside a lab; it is one
 secret every node holds, so it is not per-node identity, not end-to-end
 encryption, not key rotation, and the custody store on disk stays plaintext.
 Production would need per-node keys, TLS per link, and end-to-end AEAD.
@@ -16,6 +18,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import collections
 from contextlib import closing
 import hashlib
 import hmac
@@ -26,6 +29,11 @@ import socketserver
 import sqlite3
 import threading
 import time
+
+from cryptography.exceptions import InvalidTag
+from cryptography.hazmat.primitives import hashes
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 from pathlib import Path
 
 MAX_FRAME = 8192
@@ -77,45 +85,42 @@ def _key_bytes(key) -> bytes | None:
     return key
 
 
-ENC_PREFIX = "enc1:"
-NONCE_BYTES = 16
+ENC_PREFIX = "enc2:"
+NONCE_BYTES = 12  # AES-GCM standard nonce; random per offer, lab-scale volume
+REPLAY_CACHE = 4096
 
 
 def _enc_key(key: bytes) -> bytes:
-    # Separate subkey for encryption so the auth tag never reuses key material.
-    return hmac.new(key, b"resqnet-node-encryption-v1", hashlib.sha256).digest()
+    # HKDF subkey for bodies so encryption never reuses the auth key material.
+    return HKDF(algorithm=hashes.SHA256(), length=32, salt=b"resqnet-node",
+                info=b"encryption-v2").derive(key)
 
 
-def _keystream(enc_key: bytes, nonce: bytes, length: int) -> bytes:
-    out = bytearray()
-    counter = 0
-    while len(out) < length:
-        out.extend(hmac.new(enc_key, nonce + counter.to_bytes(4, "big"), hashlib.sha256).digest())
-        counter += 1
-    return bytes(out[:length])
+def _aad(message: dict) -> bytes:
+    # Bind the ciphertext to this message's metadata so it cannot be
+    # transplanted onto a different message ID, route, priority or expiry.
+    fields = {k: message[k] for k in ("id", "source", "destination", "priority", "expires_at")}
+    return json.dumps(fields, sort_keys=True, separators=(",", ":")).encode("utf-8")
 
 
-def encrypt_body(key: bytes, plaintext: str) -> str:
-    data = plaintext.encode("utf-8")
+def encrypt_body(key: bytes, plaintext: str, aad: bytes = b"") -> str:
     nonce = os.urandom(NONCE_BYTES)
-    stream = _keystream(_enc_key(key), nonce, len(data))
-    ciphertext = bytes(a ^ b for a, b in zip(data, stream))
+    ciphertext = AESGCM(_enc_key(key)).encrypt(nonce, plaintext.encode("utf-8"), aad)
     return ENC_PREFIX + base64.b64encode(nonce + ciphertext).decode("ascii")
 
 
-def decrypt_body(key: bytes, text: str) -> str:
+def decrypt_body(key: bytes, text: str, aad: bytes = b"") -> str:
     try:
         raw = base64.b64decode(text[len(ENC_PREFIX):], validate=True)
     except (ValueError, TypeError) as exc:
         raise ProtocolError("invalid ciphertext encoding") from exc
-    if len(raw) <= NONCE_BYTES:
+    if len(raw) <= NONCE_BYTES + 16:
         raise ProtocolError("ciphertext too short")
     nonce, ciphertext = raw[:NONCE_BYTES], raw[NONCE_BYTES:]
-    stream = _keystream(_enc_key(key), nonce, len(ciphertext))
     try:
-        return bytes(a ^ b for a, b in zip(ciphertext, stream)).decode("utf-8")
-    except UnicodeDecodeError as exc:
-        raise ProtocolError("undecryptable body") from exc
+        return AESGCM(_enc_key(key)).decrypt(nonce, ciphertext, aad).decode("utf-8")
+    except (InvalidTag, UnicodeDecodeError, ValueError) as exc:
+        raise ProtocolError("undecryptable or tampered body") from exc
 
 
 def _message(data: dict) -> dict:
@@ -225,8 +230,15 @@ class Handler(socketserver.BaseRequestHandler):
             key = self.server.key
             if key is not None:
                 body = {k: frame[k] for k in body_keys}
-                if frame.get("tag") != _tag(key, body):
+                tag = frame.get("tag")
+                if tag != _tag(key, body):
                     raise ProtocolError("unauthenticated offer")
+                with self.server.recent_lock:
+                    if tag in self.server.recent:
+                        raise ProtocolError("replayed offer frame")
+                    self.server.recent[tag] = None
+                    while len(self.server.recent) > REPLAY_CACHE:
+                        self.server.recent.popitem(last=False)
             message = frame["message"]
             body = message.get("body")
             if not isinstance(body, str):
@@ -236,7 +248,7 @@ class Handler(socketserver.BaseRequestHandler):
                 if not body.startswith(ENC_PREFIX):
                     raise ProtocolError("expected encrypted body")
                 message = dict(message)
-                message["body"] = decrypt_body(key, body)
+                message["body"] = decrypt_body(key, body, _aad(message))
             elif body.startswith(ENC_PREFIX):
                 raise ProtocolError("encrypted offer but no key")
             outcome = self.server.store.receive(message,sender=frame["sender"])
@@ -259,6 +271,8 @@ class Server(socketserver.ThreadingTCPServer):
     def __init__(self, address, store: Store, key=None):
         self.store = store
         self.key = _key_bytes(key)
+        self.recent = collections.OrderedDict()  # bounded recent offer tags
+        self.recent_lock = threading.Lock()
         super().__init__(address, Handler)
 
 
@@ -268,7 +282,7 @@ def offer(host: str, port: int, message: dict, sender: str, timeout: float = 2, 
     if key is not None:
         # Copy so a flush retry never re-encrypts the caller's plaintext dict.
         wire = dict(wire)
-        wire["body"] = encrypt_body(key, wire["body"])
+        wire["body"] = encrypt_body(key, wire["body"], _aad(wire))
     payload = {"op": "offer", "message": wire, "sender": sender}
     if key is not None:
         payload["tag"] = _tag(key, payload)
