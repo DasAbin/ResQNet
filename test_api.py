@@ -99,5 +99,31 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(client.post("/v1/simulations", json=s).status_code, 422)
 
 
+    def test_lab_observe_reports_real_stores_and_errors(self):
+        import tempfile, time
+        from pathlib import Path
+        from node import Store
+        with tempfile.TemporaryDirectory() as tmp:
+            db = str(Path(tmp) / 'a.db')
+            store = Store(db, 'A')
+            store.receive({'id':'m1','source':'A','destination':'C','body':'synthetic sos',
+                           'priority':2,'expires_at':time.time()+300}, sender=None)
+            result = client.post('/v1/lab/observe', json={
+                'nodes':[{'id':'A','db':db},{'id':'B','db':str(Path(tmp)/'missing.db')}]})
+            self.assertEqual(result.status_code, 200)
+            nodes = {n['id']: n for n in result.json()['nodes']}
+            self.assertTrue(nodes['A']['ok'])
+            self.assertEqual(nodes['A']['pending_count'], 1)
+            self.assertEqual(nodes['A']['pending'][0]['body_preview'], 'synthetic sos')
+            self.assertEqual(nodes['A']['transfers'][0]['result'], 'stored')
+            self.assertFalse(nodes['B']['ok'])
+            self.assertIn('not found', nodes['B']['error'])
+
+    def test_lab_observe_bounds_and_validation(self):
+        too_many = [{'id':f'n{i}','db':'/tmp/x.db'} for i in range(9)]
+        self.assertEqual(client.post('/v1/lab/observe', json={'nodes': too_many}).status_code, 422)
+        self.assertEqual(client.post('/v1/lab/observe', json={'nodes':[]}).status_code, 422)
+
+
 if __name__ == "__main__":
     unittest.main()
