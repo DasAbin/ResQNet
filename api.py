@@ -5,6 +5,9 @@ simulator; the service deliberately retains no message bodies or sender identity
 """
 from __future__ import annotations
 
+import sqlite3
+import time
+
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse
 from pathlib import Path
@@ -123,6 +126,72 @@ def run_scenario(scenario: RunInput):
     return {"metrics": sim.metrics(), "events": sim.events,
             "buffers": {n.id: list(n.buffer) for n in sim.nodes.values()},
             "warning": "Synthetic experiment only; not a real emergency service."}
+
+
+MAX_LAB_NODES = 8
+
+
+class LabNodeInput(StrictModel):
+    id: str = Field(min_length=1, max_length=64)
+    db: str = Field(min_length=1, max_length=400)
+
+
+class LabObserveInput(StrictModel):
+    nodes: list[LabNodeInput] = Field(min_length=1, max_length=MAX_LAB_NODES)
+    transfers: int = Field(default=30, ge=0, le=100)
+
+
+def _observe_node(node_id: str, db_path: str, transfer_limit: int) -> dict:
+    """Read one running node's SQLite store, read-only. Facts only: what the
+    store holds is reported; unavailable stores are errors, never invented."""
+    base = {"id": node_id, "db": db_path}
+    path = Path(db_path)
+    if not path.is_file():
+        return base | {"ok": False, "error": "store file not found (node not started here?)"}
+    try:
+        with sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=2) as con:
+            con.row_factory = sqlite3.Row
+            tables = {r[0] for r in con.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+            pending = [dict(r) for r in con.execute(
+                "SELECT payload FROM pending ORDER BY priority DESC, expires_at ASC, id ASC LIMIT 50")]
+            out_pending = []
+            import json as _json
+            for row in pending:
+                message = _json.loads(row["payload"])
+                out_pending.append({"id": message["id"], "source": message["source"],
+                                    "destination": message["destination"],
+                                    "priority": message["priority"],
+                                    "expires_at": message["expires_at"],
+                                    "body_preview": message["body"][:120]})
+            delivered = [dict(r) for r in con.execute(
+                "SELECT payload, delivered_at FROM delivered ORDER BY delivered_at DESC LIMIT 20")] if "delivered" in tables else []
+            out_delivered = []
+            for row in delivered:
+                message = _json.loads(row["payload"])
+                out_delivered.append({"id": message["id"], "source": message["source"],
+                                      "destination": message["destination"],
+                                      "delivered_at": row["delivered_at"]})
+            transfers = []
+            if "transfer_log" in tables and transfer_limit:
+                transfers = [dict(r) for r in con.execute(
+                    "SELECT seq, ts, direction, message_id, peer, result, detail FROM transfer_log ORDER BY seq DESC LIMIT ?",
+                    (transfer_limit,))]
+            counts = con.execute(
+                "SELECT (SELECT count(*) FROM pending) AS pending, (SELECT count(*) FROM delivered) AS delivered").fetchone()
+            return base | {"ok": True, "pending_count": counts["pending"],
+                           "delivered_count": counts["delivered"], "pending": out_pending,
+                           "delivered_recent": out_delivered, "transfers": transfers}
+    except sqlite3.Error as exc:
+        return base | {"ok": False, "error": str(exc)[:120]}
+
+
+@app.post("/v1/lab/observe")
+def lab_observe(request: LabObserveInput):
+    """Observed state of trusted-lab socket nodes whose stores this machine can
+    read. Loopback-only lab aid; stores hold plaintext synthetic messages."""
+    return {"observed_at": time.time(),
+            "nodes": [_observe_node(n.id, n.db, request.transfers) for n in request.nodes],
+            "warning": "Observed from local lab node stores, not simulated; synthetic data only."}
 
 
 @app.get("/health")
