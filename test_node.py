@@ -5,8 +5,10 @@ import threading
 import time
 import unittest
 from pathlib import Path
-from node import (PeerTracker, ProtocolError, Server, Store, MAX_PENDING,
-                  _frame, _read_frame, flush, flush_peers, offer)
+import json
+from node import (ENC_PREFIX, PeerTracker, ProtocolError, Server, Store, MAX_PENDING,
+                  _frame, _read_frame, _tag, decrypt_body, encrypt_body, flush,
+                  flush_peers, offer)
 
 
 def msg(id='m1', destination='C'):
@@ -138,6 +140,84 @@ class NodeTests(unittest.TestCase):
         with self.assertRaises(ProtocolError):
             offer('127.0.0.1',port,m,sender='A',key=key)
         self.assertEqual(self.a.status()['pending'],1)  # custody retained
+
+    def test_keyed_wire_hides_body_and_store_keeps_plaintext(self):
+        key=b'lab-key'
+        bp=self.server(self.b,key=key)
+        m=msg()
+        # Capture the exact bytes a keyed client puts on the wire.
+        import socket as _s
+        probe=_s.socket();probe.bind(('127.0.0.1',0));probe.listen(1)
+        self.addCleanup(probe.close)
+        captured={}
+        def peer():
+            conn,_=probe.accept()
+            data=b''
+            while not data.endswith(b'\n'):data+=conn.recv(1)
+            captured['wire']=data
+            frame=json.loads(data)
+            self.assertTrue(frame['message']['body'].startswith(ENC_PREFIX))
+            conn.sendall(_frame({'id':'m1','result':'stored','tag':_tag(key,{'id':'m1','result':'stored'})}))
+            conn.close()
+        threading.Thread(target=peer,daemon=True).start()
+        offer('127.0.0.1',probe.getsockname()[1],m,sender='A',key=key)
+        self.assertNotIn(b'Help needed',captured['wire'])
+        self.assertNotIn(m['body'].encode(),captured['wire'])
+        # Real server roundtrip: store ends up with readable plaintext.
+        self.assertEqual(offer(*bp,m,sender='A',key=key),'stored')
+        stored=self.b.pending()[0]
+        self.assertEqual(stored['body'],m['body'])
+        # The sender's own buffer was not mutated by encryption.
+        self.assertEqual(m['body'],'Help needed')
+
+    def test_keyed_server_rejects_plaintext_body(self):
+        key=b'lab-key'
+        bp=self.server(self.b,key=key)
+        payload={'op':'offer','message':msg(),'sender':'A'}
+        payload['tag']=_tag(key,payload)  # valid tag over plaintext body
+        with socket.create_connection(bp) as sock:
+            sock.sendall(_frame(payload))
+            reply=_read_frame(sock)
+        self.assertIn('error',reply)
+        self.assertEqual(self.b.status()['pending'],0)
+
+    def test_open_lab_rejects_encrypted_body(self):
+        ap=self.server(self.a)  # no key
+        payload={'op':'offer','message':msg(),'sender':'B'}
+        payload['message']['body']=encrypt_body(b'lab-key','Help needed')
+        with socket.create_connection(ap) as sock:
+            sock.sendall(_frame(payload))
+            reply=_read_frame(sock)
+        self.assertIn('error',reply)
+        self.assertEqual(self.a.status()['pending'],0)
+
+    def test_tampered_ciphertext_fails_tag_check(self):
+        key=b'lab-key'
+        bp=self.server(self.b,key=key)
+        payload={'op':'offer','message':msg(),'sender':'A'}
+        body=payload['message']['body']=encrypt_body(key,'Help needed')
+        mid=len(body)//2
+        flip='A' if body[mid]!='A' else 'B'
+        payload['message']['body']=body[:mid]+flip+body[mid+1:]
+        payload['tag']=_tag(key,{'op':'offer','message':msg(),'sender':'A'})  # stale tag
+        with socket.create_connection(bp) as sock:
+            sock.sendall(_frame(payload))
+            reply=_read_frame(sock)
+        self.assertIn('error',reply)
+        self.assertEqual(self.b.status()['pending'],0)
+
+    def test_decrypt_roundtrip_and_wrong_key(self):
+        key=b'lab-key'
+        text='x'*200  # long enough that a wrong key cannot plausibly decode
+        enc=encrypt_body(key,text)
+        self.assertTrue(enc.startswith(ENC_PREFIX))
+        self.assertEqual(decrypt_body(key,enc),text)
+        self.assertNotEqual(encrypt_body(key,text),enc)  # fresh nonce per offer
+        try:
+            wrong=decrypt_body(b'other-key',enc)
+        except ProtocolError:
+            wrong=None
+        self.assertNotEqual(wrong,text)
 
     def test_peer_tracker_prefers_reachable_peer(self):
         tracker=PeerTracker(rate=0.5)
