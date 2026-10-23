@@ -2,7 +2,7 @@
 
 ## Scope and safety
 
-ResQNet is a course-scale experiment, **not** a real emergency communications service. Delivery and predictor metrics come from synthetic scenarios. No radio mesh, verified distress dispatch, encryption, or real-world safety guarantee exists yet.
+ResQNet is a course-scale experiment, **not** a real emergency communications service. Delivery and predictor metrics come from synthetic scenarios. No radio mesh, verified distress dispatch, production-grade security, or real-world safety guarantee exists yet.
 
 ## Data path
 
@@ -15,7 +15,7 @@ The model currently uses custody transfer (single copy) and per-node seen IDs. T
 - `core.py`: data contracts, deterministic simulator, adaptive and snapshot-shortest forwarding policies, link-success estimator, per-hop decision explanations; standard library only.
 - `api.py`: local FastAPI service; validated `POST /v1/simulations` (scenario + `policy`) returning events, buffers, metrics with predictor state; serves the dashboard assets on loopback.
 - `dashboard.html` + `dashboard.css` + `dashboard-data.js` + `dashboard-render.js` + `dashboard-app.js`: dependency-free dashboard. Flood-rescue presets (all synthetic people/places), message and outage editors, timeline playback reconstructed from API events, per-hop "why" inspector, policy A/B comparison, estimator panel.
-- `node.py`: separate trusted-lab TCP custody-transfer prototype between OS processes, with bounded payloads, SQLite persistence and receipts, optional shared-key HMAC authentication (`--key` / `RESQNET_LAB_KEY`), and EMA-based ordering of peer contact attempts.
+- `node.py`: separate trusted-lab TCP custody-transfer prototype between OS processes, with bounded payloads, SQLite persistence and receipts, optional shared-key HMAC authentication plus encrypted bodies on the wire (`--key` / `RESQNET_LAB_KEY`), and EMA-based ordering of peer contact attempts.
 - `benchmark.py`: paired adaptive-vs-baseline comparison on held-out seeds; results in BENCHMARK.md.
 - `test_*.py`: unit, API, benchmark, Compose-static and loopback process tests (35 tests).
 
@@ -39,7 +39,7 @@ The simulator does not protect authenticity, confidentiality, or sender identity
 
 ## Trusted-lab socket node milestone
 
-`node.py` implements a distinct TCP experiment. Each node has a SQLite WAL store and a configured peer list. A length-bounded newline JSON offer is committed before the receiver sends an ACK. The source drops custody only after a fresh `stored` or `delivered` ACK. Lost ACK can result in duplicate attempts, but the receiver's seen-ID table makes them idempotent. A duplicate ACK does **not** release custody because it can come from an upstream node. `test_node.py` runs real loopback TCP servers and checks restart persistence and recovery. This is not integrated with the simulator's learned policy; peer selection is static. There is no authentication, encryption, node-discovery, multi-hop routing convergence, location service or public-facing deployment; keep traffic inside an isolated trusted lab. Containers can package these nodes later, but Docker itself is not yet shipped.
+`node.py` implements a distinct TCP experiment. Each node has a SQLite WAL store and a configured peer list. A length-bounded newline JSON offer is committed before the receiver sends an ACK. The source drops custody only after a fresh `stored` or `delivered` ACK. Lost ACK can result in duplicate attempts, but the receiver's seen-ID table makes them idempotent. A duplicate ACK does **not** release custody because it can come from an upstream node. `test_node.py` runs real loopback TCP servers and checks restart persistence and recovery. With `--key`, offers and ACKs carry an HMAC-SHA256 tag and message bodies travel encrypted: a 16-byte random nonce per offer and an HMAC-SHA256 counter-mode keystream, with the tag computed over the ciphertext (encrypt-then-MAC). The construction is stdlib-only so the container image stays dependency-free; keyed nodes reject untagged, wrong-key, plaintext or tampered offers, and the sender's buffer copy is never mutated by encryption (all covered by tests). This is not integrated with the simulator's learned policy; peer selection is static. There is no per-node identity, end-to-end or at-rest encryption, node-discovery, multi-hop routing convergence, location service or public-facing deployment; keep traffic inside an isolated trusted lab. Containers can package these nodes later, but Docker itself is not yet shipped.
 
 ## Benchmark boundary
 
@@ -47,15 +47,15 @@ The simulator does not protect authenticity, confidentiality, or sender identity
 
 ## Container lab scaffold
 
-`Dockerfile` and `compose.yaml` define three TCP nodes on an internal Docker network with no host port mappings, per-node volumes, non-root execution, dropped capabilities, and read-only root filesystems. They are a packaging scaffold, **not** a validated cloud deployment. Docker was unavailable in the build environment; the Compose startup and persistent-volume behavior have not been tested. `--host 0.0.0.0` is scoped inside the isolated container network; exposing those ports to a public or untrusted network would be unsafe because the protocol has no authentication or encryption.
+`Dockerfile` and `compose.yaml` define three TCP nodes on an internal Docker network with no host port mappings, per-node volumes, non-root execution, dropped capabilities, and read-only root filesystems. They are a packaging scaffold, **not** a validated cloud deployment. Docker was unavailable in the build environment; the Compose startup and persistent-volume behavior have not been tested. `--host 0.0.0.0` is scoped inside the isolated container network; exposing those ports to a public or untrusted network would be unsafe because one shared lab key is the only barrier, and every holder of it can read and inject traffic.
 
 ## Custody receipt fix
 
-The TCP node's SQLite `receipts` table stores an accepted result keyed by message ID and claimed sender. A retry by the same sender returns its durable receipt, including after the receiver has forwarded onward, closing the lost-ACK ambiguity. A different sender sees `duplicate`, so an upstream node does not give false custody proof. The wire's sender field is not authenticated, so this only preserves correctness among cooperating lab nodes. It is not a security guarantee. `test_node.py` covers restart plus forward-before-retry and an upstream duplicate.
+The TCP node's SQLite `receipts` table stores an accepted result keyed by message ID and claimed sender. A retry by the same sender returns its durable receipt, including after the receiver has forwarded onward, closing the lost-ACK ambiguity. A different sender sees `duplicate`, so an upstream node does not give false custody proof. Without `--key` the wire's sender field is unauthenticated, so this only preserves correctness among cooperating lab nodes. With `--key` the sender claim is covered by the tag, but one shared key is still not per-node identity. It is not a security guarantee. `test_node.py` covers restart plus forward-before-retry and an upstream duplicate.
 
 ## Bounded buffer
 
-The socket node rejects a fresh relay with `full` once its pending buffer reaches 1,000 messages. It does not write a seen ID or receipt for that rejected offer. The source retains custody and can retry later; `test_node.py` verifies it. Expired pending entries are cleared before the capacity check. The bound is per node, not per sender or priority; in an untrusted network a peer could exhaust it. A wildcard bind needs an explicit container-lab flag, but there is still no authentication, rate limit, or encryption.
+The socket node rejects a fresh relay with `full` once its pending buffer reaches 1,000 messages. It does not write a seen ID or receipt for that rejected offer. The source retains custody and can retry later; `test_node.py` verifies it. Expired pending entries are cleared before the capacity check. The bound is per node, not per sender or priority; in an untrusted network a peer could exhaust it. A wildcard bind needs an explicit container-lab flag, and there is still no per-node identity, rate limit, or at-rest encryption.
 
 ## SQLite durability setting
 
