@@ -83,6 +83,31 @@ function animate(svg,[x1,y1],[x2,y2],cls){const g=el("g",{class:"pk "+cls}),r=el
  const t0=performance.now();(function step(){const k=Math.min(1,(performance.now()-t0)/700);
   g.setAttribute("transform",`translate(${x1+(x2-x1)*k},${y1+(y2-y1)*k})`);
   if(k<1&&timer)requestAnimationFrame(step);else g.remove()})()}
+let labTimer=null;
+async function labObserve(){const out=$("#lab-out");
+ const lines=$("#lab-nodes").value.split("\n").map(s=>s.trim()).filter(Boolean);
+ const nodes=[];for(const ln of lines){const i=ln.indexOf("=");if(i<1)continue;nodes.push({id:ln.slice(0,i).trim(),db:ln.slice(i+1).trim()})}
+ if(!nodes.length){out.innerHTML='<p class="note">List at least one node as ID=store-path.</p>';return}
+ let r;try{r=await fetch("/v1/lab/observe",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({nodes})});}
+ catch(e){out.innerHTML=`<p class="note">Observe failed: ${esc(e.message)}</p>`;return}
+ if(!r.ok){out.innerHTML=`<p class="note">Observe failed: API ${r.status}</p>`;return}
+ renderLab(await r.json())}
+function labRow(e){const when=new Date(e.ts*1000).toLocaleTimeString();
+ const dir=e.direction==="in"?"&#8672; IN from":"OUT to &#8680;";
+ let basis="";if(e.detail){try{const d=JSON.parse(e.detail);basis=d.basis?` <span class="basis">${esc(d.basis)}</span>`:""}catch(_){}}
+ return `<div class="trow"><span class="t">${when}</span><span>${dir} ${esc(e.peer)}</span><span class="mono">${esc(e.message_id)}</span><span class="res ${esc(e.result)}">${esc(e.result).toUpperCase()}</span>${basis}</div>`}
+function renderLab(d){const out=$("#lab-out");
+ out.innerHTML=`<p class="note">Observed at ${new Date(d.observed_at*1000).toLocaleTimeString()} &mdash; ${esc(d.warning)}</p>`+
+  d.nodes.map(n=>{if(!n.ok)return `<div class="lcard bad"><h4>${esc(n.id)} <span class="mono">${esc(n.db)}</span></h4><p class="note">UNAVAILABLE: ${esc(n.error)}</p></div>`;
+   const pend=n.pending.map(m=>`<tr><td>${esc(m.id)}</td><td>${esc(m.source)}&rarr;${esc(m.destination)}</td><td>${PN[m.priority]||m.priority}</td><td>${esc(m.body_preview)}</td></tr>`).join("");
+   const del=n.delivered_recent.map(m=>`<tr><td>${esc(m.id)}</td><td>${esc(m.source)}&rarr;${esc(m.destination)}</td><td>${new Date(m.delivered_at*1000).toLocaleTimeString()}</td></tr>`).join("");
+   const trs=n.transfers.map(labRow).join("");
+   return `<div class="lcard"><h4>${esc(n.id)} <span class="mono">${esc(n.db)}</span></h4>
+    <div class="counts mono"><span>PENDING <b>${n.pending_count}</b></span><span>DELIVERED <b>${n.delivered_count}</b></span></div>
+    ${pend?`<h5>CARRYING NOW</h5><table class="mono">${pend}</table>`:""}
+    ${del?`<h5>ARRIVED HERE</h5><table class="mono">${del}</table>`:""}
+    ${trs?`<h5>TRANSFER LOG (newest first)</h5><div class="tlog">${trs}</div>`:""}
+   </div>`}).join("")}
 function boot(){const sel=$("#preset");sel.innerHTML=PRESETS.map((p,i)=>`<option value="${i}">${p.name}</option>`).join("");
  sel.onchange=()=>fillPreset(PRESETS[+sel.value]);fillPreset(PRESETS[0]);
  document.body.addEventListener("change",e=>{if(e.target.dataset.m!==undefined||e.target.dataset.c!==undefined)readTables()});
@@ -92,6 +117,9 @@ function boot(){const sel=$("#preset");sel.innerHTML=PRESETS.map((p,i)=>`<option
  $("#add-msg").onclick=()=>{const ids=cur.nodes.map(n=>n.id);messages.push({id:"msg-"+(messages.length+1)+"-"+Math.floor(Math.random()*1e4),source:ids[0],destination:ids[ids.length-1],priority:1,created:0,ttl:50,label:""});msgTable()};
  $("#add-chg").onclick=()=>{const l=cur.links[0];changes.push({tick:1,a:l.a,b:l.b,active:true});chgTable()};
  $("#run").onclick=run;$("#play").onclick=play;$("#back").onclick=()=>{stop();if(runs.adaptive&&tick>0)go(tick-1)};
+ $("#lab-observe").onclick=labObserve;
+ $("#lab-auto").onchange=e=>{clearInterval(labTimer);labTimer=e.target.checked?setInterval(labObserve,3000):null;if(labTimer)labObserve()};
+ labObserve();  // show current node state on load; unavailable stores say so
  $("#fwd").onclick=()=>{stop();if(runs.adaptive&&tick<cur.ticks){go(tick+1);if(tick>=cur.ticks)verdict()}};
  $("#scrub").oninput=e=>{stop();if(runs.adaptive){tick=+e.target.value;$("#feed").innerHTML="";for(let t=0;t<=tick;t++)log(t);draw(tick);if(tick>=cur.ticks)verdict()}};
  const q=new URLSearchParams(location.search);
