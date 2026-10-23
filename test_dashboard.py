@@ -12,15 +12,17 @@ class DashboardTests(unittest.TestCase):
         self.assertEqual(result.status_code, 200)
         self.assertIn('text/html', result.headers['content-type'])
         for label in ['Flood rescue relay lab', 'RUN SIMULATION', 'WHY THIS HOP?',
-                      'EVENT LOG', 'NOT A LIVE INCIDENT', 'HOW THIS SOLVES IT']:
+                      'EVENT LOG', 'NOT A LIVE INCIDENT', 'HOW THIS SOLVES IT',
+                      'LIVE LAB', 'OBSERVED', '/v1/lab/observe']:
             self.assertIn(label, result.text)
 
     def test_serves_assets_and_rejects_others(self):
         for asset in ('dashboard.css', 'dashboard-data.js',
                       'dashboard-render.js', 'dashboard-app.js'):
             self.assertEqual(self.client.get('/' + asset).status_code, 200, asset)
-        self.assertIn("fetch('/v1/simulations'".replace("'", '"'),
-                      self.client.get('/dashboard-app.js').text.replace("'", '"'))
+        app_js = self.client.get('/dashboard-app.js').text.replace("'", '"')
+        self.assertIn("fetch('/v1/simulations'".replace("'", '"'), app_js)
+        self.assertIn('/v1/lab/observe', app_js)
         self.assertEqual(self.client.get('/etc/passwd').status_code, 404)
         self.assertEqual(self.client.get('/api.py').status_code, 404)
 
