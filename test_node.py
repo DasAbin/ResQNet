@@ -268,6 +268,34 @@ class NodeTests(unittest.TestCase):
         self.assertEqual(self.c.status()['delivered'],1)
         self.assertEqual(self.a.status()['pending'],0)
 
+    def test_transfer_log_records_observed_custody_events(self):
+        key=b'lab-key'
+        cp=self.server(self.c,key=key)
+        self.a.receive(msg(),sender=None)  # local injection logged too
+        outcomes=flush_peers(self.a,[cp],PeerTracker(),key=key)
+        self.assertEqual(outcomes,[('m1','delivered',cp)])
+        out_log=self.a.transfers()
+        kinds=[(e['direction'],e['message_id'],e['peer'],e['result']) for e in out_log]
+        self.assertIn(('out','m1',f'{cp[0]}:{cp[1]}','delivered'),kinds)
+        self.assertIn(('in','m1','local','stored'),kinds)
+        detail=__import__('json').loads(next(e['detail'] for e in out_log if e['direction']=='out'))
+        self.assertEqual(detail['rank'],0)
+        self.assertIn('untried peer',detail['basis'])
+        in_log=self.c.transfers()
+        self.assertEqual([(e['direction'],e['peer'],e['result']) for e in in_log],
+                         [('in','A','delivered')])
+        self.assertEqual(self.c.delivered_recent()[0]['id'],'m1')
+        # EMA basis becomes visible after a real outcome
+        tracker=PeerTracker()
+        self.a.receive(msg('m2'))
+        flush_peers(self.a,[cp],tracker,key=key)
+        self.b.receive(msg('m3'))
+        flush_peers(self.b,[('127.0.0.1',1),cp],tracker,key=key)  # one dead, one live
+        second=__import__('json').loads([e for e in self.b.transfers()
+                                         if e['direction']=='out'][0]['detail'])
+        self.assertEqual(second['rank'],0)
+        self.assertIn('EMA',second['basis'])  # live peer ranked first on real score
+
     def test_priority_order_and_expiration(self):
         lo=msg('low');lo['priority']=0
         hi=msg('high');hi['priority']=2
