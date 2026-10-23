@@ -30,7 +30,8 @@ class ProcessLabTests(unittest.TestCase):
             def start(idx, peers=()):
                 cmd = [sys.executable, '-u', str(Path(__file__).with_name('node.py')),
                        '--id', 'ABC'[idx], '--db', str(stores[idx]),
-                       '--host', '127.0.0.1', '--port', str(ports[idx]), '--interval', '0.1']
+                       '--host', '127.0.0.1', '--port', str(ports[idx]), '--interval', '0.1',
+                       '--key', 'process-lab-key']
                 for peer in peers:
                     cmd += ['--peer', f'127.0.0.1:{ports[peer]}']
                 proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
@@ -70,6 +71,57 @@ class ProcessLabTests(unittest.TestCase):
                 until(lambda: Store(str(stores[2]), 'C').status()['delivered'] == 1 and
                       Store(str(stores[1]), 'B').status()['pending'] == 0, 'delivery at C')
                 self.assertEqual(Store(str(stores[2]), 'C').status()['pending'], 0)
+            finally:
+                for proc in processes:
+                    proc.terminate()
+                for proc in processes:
+                    try:
+                        proc.communicate(timeout=3)
+                    except subprocess.TimeoutExpired:
+                        proc.kill()
+                        proc.communicate(timeout=3)
+
+
+    def test_mismatched_key_blocks_custody(self):
+        with tempfile.TemporaryDirectory() as folder:
+            ports = []
+            while len(ports) < 2:
+                port = free_port()
+                if port not in ports:
+                    ports.append(port)
+            root = Path(folder)
+            stores = [root / f'{node}.db' for node in 'AB']
+            processes = []
+            def start(idx, key, peers=()):
+                cmd = [sys.executable, '-u', str(Path(__file__).with_name('node.py')),
+                       '--id', 'AB'[idx], '--db', str(stores[idx]),
+                       '--host', '127.0.0.1', '--port', str(ports[idx]), '--interval', '0.1',
+                       '--key', key]
+                for peer in peers:
+                    cmd += ['--peer', f'127.0.0.1:{ports[peer]}']
+                proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+                processes.append(proc)
+                deadline = time.monotonic() + 5
+                while time.monotonic() < deadline:
+                    try:
+                        with socket.create_connection(('127.0.0.1', ports[idx]), timeout=.1):
+                            return
+                    except OSError:
+                        time.sleep(.025)
+                self.fail('node did not listen')
+            try:
+                start(0, 'key-one', (1,))
+                start(1, 'key-two')
+                source = Store(str(stores[0]), 'A')
+                source.receive({'id': 'forged-lab', 'source': 'A', 'destination': 'B',
+                                'body': 'Synthetic test only', 'priority': 2,
+                                'expires_at': time.time() + 60})
+                deadline = time.monotonic() + 4
+                while time.monotonic() < deadline:
+                    time.sleep(.1)
+                # B rejects A's offers (different key): custody stays at A.
+                self.assertEqual(source.status()['pending'], 1)
+                self.assertEqual(Store(str(stores[1]), 'B').status()['pending'], 0)
             finally:
                 for proc in processes:
                     proc.terminate()
