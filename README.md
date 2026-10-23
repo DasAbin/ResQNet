@@ -2,7 +2,7 @@
 
 An experimental opportunistic disaster-network simulator: messages are buffered across partitions and forwarded when contacts return, with priority scheduling and an adaptive link-success estimate.
 
-**Status:** simulator core, local FastAPI/dashboard, and a separate trusted-lab TCP socket prototype. No trained disaster predictor, secure mesh, or cloud service is shipped. Never use this for a real distress call.
+**Status:** simulator core with explainable forwarding, local FastAPI/dashboard with flood-rescue scenarios, and a separate trusted-lab TCP socket prototype. No trained disaster predictor, secure mesh, or cloud service is shipped. Never use this for a real distress call.
 
 ## Quick start
 
@@ -18,7 +18,7 @@ python3 example.py
 ## Next milestones
 
 1. Evaluate more graph families and proper DTN baselines with equal resource budgets.
-2. Harden local API and dashboard; decide whether a React client adds value.
+2. Wire the socket node's peer selection to the estimator (currently separate).
 3. Add authenticated, encrypted, bounded-retry socket nodes before any non-isolated use.
 
 The project combines networking behavior with an online predictor and a planned cloud/edge telemetry split. It does not claim novel disaster-network research or production safety.
@@ -34,11 +34,11 @@ python3 -m venv .venv
 .venv/bin/uvicorn api:app --host 127.0.0.1 --port 8000
 ```
 
-The interactive local API docs are at `http://127.0.0.1:8000/docs`. Send a JSON scenario to `POST /v1/simulations`: `nodes`, `links`, `messages`, optional `changes`, `ticks`, and `seed`. The response has events, buffers, and metrics. Request sizes and computational work are bounded. The API has no authentication or abuse controls and must **not** be exposed on a public network. `httpx` is a test-only dependency for FastAPI's TestClient.
+The interactive local API docs are at `http://127.0.0.1:8000/docs`. Send a JSON scenario to `POST /v1/simulations`: `nodes`, `links`, `messages`, optional `changes`, `policy` (`adaptive` or `snapshot_shortest`), `ticks`, and `seed`. The response has events (including per-hop `decision` explanations with score components), buffers, and metrics including predictor state. Request sizes and computational work are bounded. The API has no authentication or abuse controls and must **not** be exposed on a public network. `httpx` is a test-only dependency for FastAPI's TestClient.
 
-## Dashboard
+## Dashboard (flood rescue relay lab)
 
-Open `http://127.0.0.1:8000/` after starting the API. The dependency-free dashboard sends a bounded synthetic A-B-C scenario to the API and animates the resulting event trace. Configure the link recovery tick, run length, and RNG seed. The graphic and metrics are derived from the API response, not invented static values. It is a local web UI, not a deployed cloud service.
+Open `http://127.0.0.1:8000/` after starting the API. The dependency-free dashboard illustrates the intended use: during a flood, a stranded resident's phone cannot reach the relief camp, so messages are stored, carried on nearby devices, and forwarded when a link returns. Pick a synthetic preset (footbridge outage, two routes to camp, flapping causeway), edit messages and link outage ticks, then run and scrub the timeline. Packets, metrics, the event log, per-hop "why this hop" score breakdowns, the estimator's learned weights, and an optional adaptive-vs-baseline comparison all come from real `/v1/simulations` responses, not canned values. All people, places and events are synthetic illustrations; this is a local web UI, not a deployed cloud service or a field-tested rescue system.
 
 ## Experimental socket nodes
 
