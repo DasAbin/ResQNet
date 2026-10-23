@@ -42,7 +42,7 @@ Open `http://127.0.0.1:8000/` after starting the API. The dependency-free dashbo
 
 ## Experimental socket nodes
 
-`node.py` is a separate, **trusted-lab-only** TCP custody-transfer prototype. It receives a size-bounded JSON offer, commits it to SQLite before ACK, retries buffered transfers when a configured peer becomes reachable, and keeps an immutable ID history to avoid double delivery. Example with three shells:
+`node.py` is a separate, **trusted-lab-only** TCP custody-transfer prototype. It receives a size-bounded JSON offer, commits it to SQLite before ACK, retries buffered transfers when a configured peer becomes reachable, and keeps an immutable ID history to avoid double delivery. With several peers it orders contact attempts by an online per-peer success estimate (a simple EMA; the simulator's logistic model is separate). Pass `--key` (or set `RESQNET_LAB_KEY`) to tag offers and ACKs with HMAC-SHA256: peers without the shared key are rejected, and a forged or untagged ACK no longer convinces a sender to release custody (both covered by tests). Without a key the node runs unauthenticated ("open-lab"). Example with three shells:
 
 ```bash
 python3 node.py --id A --db /tmp/resq-a.db --port 9101 --peer 127.0.0.1:9102
@@ -62,7 +62,7 @@ print(Store('/tmp/resq-a.db','A').receive({'id':'demo-1','source':'A','destinati
 PY
 ```
 
-Start A and B, then start C later to demonstrate buffering across an outage. In another shell, inspect `Store('/tmp/resq-c.db','C').status()` from Python. Run `python3 -m unittest discover -v` to exercise protocol, restart, expiry, malformed input, and custody tests. This prototype has **no encryption, peer authentication, anti-replay across IDs, admission quotas, or disaster-radio transport**. Bind only to localhost/private isolated labs, never public interfaces or real users. Its predictor is in the simulator, not yet wired to live socket peer selection.
+Start A and B, then start C later to demonstrate buffering across an outage. In another shell, inspect `Store('/tmp/resq-c.db','C').status()` from Python. Run `python3 -m unittest discover -v` to exercise protocol, restart, expiry, malformed input, authentication, peer-ordering, and custody tests. This prototype has **no encryption, no per-peer identity beyond the shared lab key, no anti-replay across IDs, no admission quotas, and no disaster-radio transport**. The shared key is lab-grade only: it does not protect against someone reading traffic, and one leaked key compromises every lab node. Bind only to localhost/private isolated labs, never public interfaces or real users.
 
 ## Comparative benchmark
 
@@ -74,7 +74,7 @@ Start A and B, then start C later to demonstrate buffering across an outage. In 
 
 After installing Docker Compose, try `docker compose up --build` on a local lab machine. To demonstrate a temporary partition, start `docker compose up --build node-a node-b`, inject a synthetic message into A's store with `docker compose exec node-a python -c "from node import Store; import time; print(Store('/data/node.db','A').receive({'id':'demo-container-1','source':'A','destination':'C','body':'Synthetic only','priority':2,'expires_at':time.time()+300}))"`, then start node-c with `docker compose up -d node-c`. Inspect C with `docker compose exec node-c python -c "from node import Store; print(Store('/data/node.db','C').status())"`. The project has not run this Compose sequence in a Docker-enabled environment, so treat these commands as a starting point, not a verified demo.
 
-The socket receipt protocol persists `(message ID, sender node, accepted result)` alongside each accepted message. A retry after a lost ACK gets the same `stored`/`delivered` receipt, even after that peer forwards onward; an unrelated sender still gets a generic duplicate. This fixes a lab failure where the sender otherwise retained the message until expiry after a lost ACK. Sender IDs are *not authenticated*, so a malicious node could forge one; this is not suitable for an untrusted network.
+The socket receipt protocol persists `(message ID, sender node, accepted result)` alongside each accepted message. A retry after a lost ACK gets the same `stored`/`delivered` receipt, even after that peer forwards onward; an unrelated sender still gets a generic duplicate. This fixes a lab failure where the sender otherwise retained the message until expiry after a lost ACK. With `--key`, sender IDs and receipts are authenticated by the shared lab key; without it, a malicious node could still forge one. Either way this is not suitable for an untrusted network.
 
 The socket node now bounds its pending buffer at 1,000 messages: a full buffer responds `full` without recording the rejected ID, so a later retry can succeed. The sender retains custody on `full`. Wildcard bind requires the explicit `--allow-container-bind` flag and is used only by the internal Compose lab; this flag is a reminder, **not** a security mechanism. The server still lacks admission rate limits, peer authentication, encryption, and a verified Docker runtime.
 
