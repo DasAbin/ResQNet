@@ -7,9 +7,10 @@ import unittest
 from pathlib import Path
 import json
 import base64
-from node import (ENC_PREFIX, PeerTracker, ProtocolError, Server, Store, MAX_PENDING,
+from core import DeliveryPredictor
+from node import (ENC_PREFIX, Peer, ProtocolError, Server, Store, MAX_PENDING,
                   _aad, _frame, _read_frame, _tag, decrypt_body, encrypt_body,
-                  flush, flush_peers, offer)
+                  flush, flush_peers, offer, peer_status)
 
 
 def msg(id='m1', destination='C'):
@@ -253,48 +254,75 @@ class NodeTests(unittest.TestCase):
         self.assertEqual(offer(*bp,m,sender='A',key=key),'stored')
         self.assertEqual(self.b.status()['pending'],1)
 
-    def test_peer_tracker_prefers_reachable_peer(self):
-        tracker=PeerTracker(rate=0.5)
-        self.assertEqual([p for p in tracker.order([('127.0.0.1',1),('127.0.0.1',2)])],
-                         tracker.order([('127.0.0.1',2),('127.0.0.1',1)]))  # unknowns tie-break by name
-        dead=('127.0.0.1',1)
+    def test_flush_skips_unreachable_peer_and_delivers_via_live_one(self):
+        dead=Peer('127.0.0.1',1)
         cp=self.server(self.c)
+        live=Peer(*cp)
+        predictor=DeliveryPredictor()
         self.a.receive(msg())
-        outcomes=flush_peers(self.a,[dead,cp],tracker)
-        self.assertEqual(sorted((mid,res) for mid,res,_ in outcomes),
-                         [('m1','delivered'),('m1','unreachable')])
-        self.assertLess(tracker.score(dead),tracker.score(cp))
-        self.assertEqual(tracker.order([dead,cp])[0],cp)
+        outcomes=flush_peers(self.a,[dead,live],predictor)
+        self.assertEqual(outcomes,[('m1','delivered',cp)])  # dead peer never attempted
+        self.assertFalse(dead.up)
+        self.assertTrue(live.up)
+        self.assertGreater(predictor.samples,0)  # probe + delivery outcomes trained the shared model
         self.assertEqual(self.c.status()['delivered'],1)
         self.assertEqual(self.a.status()['pending'],0)
+
+    def test_adaptive_selection_prefers_better_configured_link(self):
+        bp=self.server(self.b)
+        cp=self.server(self.c)
+        lossy=Peer(*bp,loss=0.9,reliability=0.2)
+        clean=Peer(*cp,loss=0.0,reliability=1.0)
+        predictor=DeliveryPredictor()
+        self.a.receive(msg('m1','D'))
+        outcomes=flush_peers(self.a,[lossy,clean],predictor)
+        self.assertEqual(outcomes,[('m1','stored',cp)])  # same score_hop as the simulator
+        self.assertEqual(self.c.status()['pending'],1)
+        self.assertEqual(self.b.status()['pending'],0)
+        import json as _json
+        detail=_json.loads(self.a.transfers()[0]['detail'])
+        for k in ('score','p_success','urgency','congestion','latency_ms','peer_load','basis'):
+            self.assertIn(k,detail)
+        self.assertIsNone(detail['progress'])  # honestly unavailable in the TCP lab
+        self.assertIn('DeliveryPredictor',detail['basis'])
+
+    def test_status_probe_reports_observed_load_and_requires_key(self):
+        key=b'lab-key'
+        self.b.receive(msg(),sender=None)
+        bp=self.server(self.b,key=key)
+        status=peer_status('127.0.0.1',bp[1],key=key)
+        self.assertEqual(status['pending'],1)
+        self.assertEqual(status['capacity'],MAX_PENDING)
+        with self.assertRaises(ProtocolError):
+            peer_status('127.0.0.1',bp[1])  # untagged probe rejected by keyed node
+        with self.assertRaises(ProtocolError):
+            peer_status('127.0.0.1',bp[1],key=b'wrong-key')
 
     def test_transfer_log_records_observed_custody_events(self):
         key=b'lab-key'
         cp=self.server(self.c,key=key)
         self.a.receive(msg(),sender=None)  # local injection logged too
-        outcomes=flush_peers(self.a,[cp],PeerTracker(),key=key)
+        outcomes=flush_peers(self.a,[Peer(*cp)],DeliveryPredictor(),key=key)
         self.assertEqual(outcomes,[('m1','delivered',cp)])
         out_log=self.a.transfers()
         kinds=[(e['direction'],e['message_id'],e['peer'],e['result']) for e in out_log]
         self.assertIn(('out','m1',f'{cp[0]}:{cp[1]}','delivered'),kinds)
         self.assertIn(('in','m1','local','stored'),kinds)
-        detail=__import__('json').loads(next(e['detail'] for e in out_log if e['direction']=='out'))
-        self.assertEqual(detail['rank'],0)
-        self.assertIn('untried peer',detail['basis'])
+        import json as _json
+        detail=_json.loads(next(e['detail'] for e in out_log if e['direction']=='out'))
+        self.assertEqual(detail['urgency'],3)  # SOS priority
+        self.assertIn('core.score_hop',detail['basis'])
         in_log=self.c.transfers()
         self.assertEqual([(e['direction'],e['peer'],e['result']) for e in in_log],
                          [('in','A','delivered')])
         self.assertEqual(self.c.delivered_recent()[0]['id'],'m1')
-        # EMA basis becomes visible after a real outcome
-        tracker=PeerTracker()
-        self.a.receive(msg('m2'))
-        flush_peers(self.a,[cp],tracker,key=key)
+        # Full outage: no peer answers the probe, custody retained, reason logged.
         self.b.receive(msg('m3'))
-        flush_peers(self.b,[('127.0.0.1',1),cp],tracker,key=key)  # one dead, one live
-        second=__import__('json').loads([e for e in self.b.transfers()
-                                         if e['direction']=='out'][0]['detail'])
-        self.assertEqual(second['rank'],0)
-        self.assertIn('EMA',second['basis'])  # live peer ranked first on real score
+        outcomes=flush_peers(self.b,[Peer('127.0.0.1',1)],DeliveryPredictor(),key=key)
+        self.assertEqual(outcomes,[('m3','unreachable',None)])
+        self.assertEqual(self.b.status()['pending'],1)
+        last=_json.loads(self.b.transfers()[0]['detail'])
+        self.assertIn('no peer answered',last['basis'])
 
     def test_priority_order_and_expiration(self):
         lo=msg('low');lo['priority']=0
