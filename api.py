@@ -5,10 +5,11 @@ simulator; the service deliberately retains no message bodies or sender identity
 """
 from __future__ import annotations
 
+import os
 import sqlite3
 import time
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse
 from pathlib import Path
 from typing import Literal
@@ -141,17 +142,28 @@ class LabObserveInput(StrictModel):
     transfers: int = Field(default=30, ge=0, le=100)
 
 
+def _lab_roots() -> list[Path]:
+    """Directories lab stores may live in; default /tmp, override via env."""
+    raw = os.environ.get("RESQNET_LAB_ROOTS", "/tmp")
+    return [Path(item).resolve() for item in raw.split(os.pathsep) if item]
+
+
 def _observe_node(node_id: str, db_path: str, transfer_limit: int) -> dict:
     """Read one running node's SQLite store, read-only. Facts only: what the
-    store holds is reported; unavailable stores are errors, never invented."""
+    store holds is reported; unavailable stores are errors, never invented.
+    Paths are confined to the lab roots so this cannot read arbitrary files."""
     base = {"id": node_id, "db": db_path}
-    path = Path(db_path)
+    path = Path(db_path).resolve()
+    if not any(path == root or root in path.parents for root in _lab_roots()):
+        return base | {"ok": False, "error": "path outside allowed lab roots"}
     if not path.is_file():
         return base | {"ok": False, "error": "store file not found (node not started here?)"}
     try:
         with sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=2) as con:
             con.row_factory = sqlite3.Row
             tables = {r[0] for r in con.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+            if not {"seen", "pending", "delivered"} <= tables:
+                return base | {"ok": False, "error": "not a ResQNet node store"}
             pending = [dict(r) for r in con.execute(
                 "SELECT payload FROM pending ORDER BY priority DESC, expires_at ASC, id ASC LIMIT 50")]
             out_pending = []
@@ -186,9 +198,13 @@ def _observe_node(node_id: str, db_path: str, transfer_limit: int) -> dict:
 
 
 @app.post("/v1/lab/observe")
-def lab_observe(request: LabObserveInput):
+def lab_observe(request: LabObserveInput, raw: Request):
     """Observed state of trusted-lab socket nodes whose stores this machine can
     read. Loopback-only lab aid; stores hold plaintext synthetic messages."""
+    client_host = raw.client.host if raw.client else ""
+    # "testclient" is the ASGI test transport's marker, never a real socket peer.
+    if client_host not in ("127.0.0.1", "::1", "testclient"):
+        raise HTTPException(status_code=403, detail="lab observation is loopback-only")
     return {"observed_at": time.time(),
             "nodes": [_observe_node(n.id, n.db, request.transfers) for n in request.nodes],
             "warning": "Observed from local lab node stores, not simulated; synthetic data only."}
