@@ -6,9 +6,10 @@ import time
 import unittest
 from pathlib import Path
 import json
+import base64
 from node import (ENC_PREFIX, PeerTracker, ProtocolError, Server, Store, MAX_PENDING,
-                  _frame, _read_frame, _tag, decrypt_body, encrypt_body, flush,
-                  flush_peers, offer)
+                  _aad, _frame, _read_frame, _tag, decrypt_body, encrypt_body,
+                  flush, flush_peers, offer)
 
 
 def msg(id='m1', destination='C'):
@@ -208,16 +209,49 @@ class NodeTests(unittest.TestCase):
 
     def test_decrypt_roundtrip_and_wrong_key(self):
         key=b'lab-key'
-        text='x'*200  # long enough that a wrong key cannot plausibly decode
-        enc=encrypt_body(key,text)
+        enc=encrypt_body(key,'x'*200)
         self.assertTrue(enc.startswith(ENC_PREFIX))
-        self.assertEqual(decrypt_body(key,enc),text)
-        self.assertNotEqual(encrypt_body(key,text),enc)  # fresh nonce per offer
-        try:
-            wrong=decrypt_body(b'other-key',enc)
-        except ProtocolError:
-            wrong=None
-        self.assertNotEqual(wrong,text)
+        self.assertEqual(decrypt_body(key,enc),'x'*200)
+        self.assertNotEqual(encrypt_body(key,'x'*200),enc)  # fresh nonce per offer
+        with self.assertRaises(ProtocolError):  # AEAD failure is deterministic
+            decrypt_body(b'other-key',enc)
+
+    def test_tampered_ciphertext_and_transplant_rejected(self):
+        key=b'lab-key'
+        m=msg()
+        aad=_aad(m)
+        enc=encrypt_body(key,m['body'],aad)
+        raw=bytearray(base64.b64decode(enc[len(ENC_PREFIX):]))
+        raw[-1]^=1  # flip one ciphertext bit
+        tampered=ENC_PREFIX+base64.b64encode(bytes(raw)).decode()
+        with self.assertRaises(ProtocolError):
+            decrypt_body(key,tampered,aad)
+        with self.assertRaises(ProtocolError):  # truncated tag/ciphertext
+            decrypt_body(key,ENC_PREFIX+base64.b64encode(bytes(raw[:20])).decode(),aad)
+        other=dict(m);other['destination']='B'
+        with self.assertRaises(ProtocolError):  # metadata transplant bound by AAD
+            decrypt_body(key,enc,_aad(other))
+        self.assertEqual(decrypt_body(key,enc,aad),m['body'])
+
+    def test_replayed_offer_frame_rejected_custody_unaffected(self):
+        key=b'lab-key'
+        bp=self.server(self.b,key=key)
+        m=msg()
+        wire=dict(m)
+        wire['body']=encrypt_body(key,wire['body'],_aad(wire))
+        payload={'op':'offer','message':wire,'sender':'A'}
+        payload['tag']=_tag(key,payload)
+        frame=_frame(payload)
+        with socket.create_connection(bp) as sock:  # first send accepted
+            sock.sendall(frame)
+            self.assertEqual(_read_frame(sock).get('result'),'stored')
+        with socket.create_connection(bp) as sock:  # byte-exact replay rejected
+            sock.sendall(frame)
+            self.assertIn('error',_read_frame(sock))
+        self.assertEqual(self.b.status()['pending'],1)
+        # A legitimate retry makes a fresh ciphertext and is still accepted.
+        self.assertEqual(offer(*bp,m,sender='A',key=key),'stored')
+        self.assertEqual(self.b.status()['pending'],1)
 
     def test_peer_tracker_prefers_reachable_peer(self):
         tracker=PeerTracker(rate=0.5)
