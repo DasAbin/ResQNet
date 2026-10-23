@@ -63,6 +63,18 @@ class Link:
         raise ValueError("node not on link")
 
 
+def score_hop(p_success: float, urgency: float, congestion: float, latency_ms: float,
+              peer_load: float) -> float:
+    """Message-level candidate-hop score shared by simulator and socket transport.
+
+    The simulator adds its topology progress term on top; the TCP lab has no
+    topology map, so its transport uses this shared core only. Both engines
+    therefore rank hops with the same formula over observed/configured facts.
+    """
+    return (urgency * (2.0 * p_success - 1.0)
+            - 0.7 * congestion - latency_ms / 1000.0 - 0.5 * peer_load)
+
+
 class DeliveryPredictor:
     """Online logistic link-success estimator; updates only from observed attempts.
 
@@ -167,8 +179,8 @@ class Simulator:
         p_success = self.predictor.predict(link, source.battery)
         urgency = 1 + int(message.priority)
         load = len(peer.buffer) / max(1, peer.capacity)
-        score = (2.0 * progress + urgency * (2.0 * p_success - 1.0)
-                 - 0.7 * link.congestion - link.latency_ms / 1000.0 - 0.5 * load)
+        score = 2.0 * progress + score_hop(p_success, urgency, link.congestion,
+                                           link.latency_ms, load)
         return score, dict(progress=progress, p_success=round(p_success, 4),
                            urgency=urgency, congestion=link.congestion,
                            latency_ms=link.latency_ms, peer_load=round(load, 4),
