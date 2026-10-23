@@ -1,4 +1,4 @@
-# Trusted-lab example with a shared HMAC key. No ports are published to the host.
+# Trusted-lab example with a shared HMAC key (auth + wire encryption). No ports are published to the host.
 # Docker network is internal; only synthetic messages belong here. The key below
 # is a lab demo value, not a real secret; rotate it for any other network.
 services:
