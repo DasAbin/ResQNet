@@ -161,13 +161,18 @@ class Simulator:
                 break
         return float("inf")
 
-    def _score(self, source: Node, peer: Node, message: Message, link: Link) -> float:
+    def _score(self, source: Node, peer: Node, message: Message, link: Link) -> tuple[float, dict]:
+        """Score a candidate hop and keep the components so a UI can explain it."""
         progress = self._distance(source.id, message.destination) - self._distance(peer.id, message.destination)
         p_success = self.predictor.predict(link, source.battery)
         urgency = 1 + int(message.priority)
-        return (2.0 * progress + urgency * (2.0 * p_success - 1.0)
-                - 0.7 * link.congestion - link.latency_ms / 1000.0
-                - 0.5 * len(peer.buffer) / max(1, peer.capacity))
+        load = len(peer.buffer) / max(1, peer.capacity)
+        score = (2.0 * progress + urgency * (2.0 * p_success - 1.0)
+                 - 0.7 * link.congestion - link.latency_ms / 1000.0 - 0.5 * load)
+        return score, dict(progress=progress, p_success=round(p_success, 4),
+                           urgency=urgency, congestion=link.congestion,
+                           latency_ms=link.latency_ms, peer_load=round(load, 4),
+                           total=round(score, 4))
 
     def tick(self) -> None:
         self.tick_number += 1
@@ -180,6 +185,7 @@ class Simulator:
                                             id=mid, node=node.id))
         # Snapshot prevents a message from traversing multiple hops in one tick.
         candidates = []
+        explain: dict[tuple[str, str, str], dict] = {}
         for source in self.nodes.values():
             for msg in source.buffer.values():
                 if msg.id in self.delivered:
@@ -196,9 +202,16 @@ class Simulator:
                         if not math.isfinite(current) or onward >= current:
                             continue
                         score = 1.0 / (1.0 + onward)
+                        components = dict(onward_hops=onward, total=round(score, 4))
                     else:
-                        score = self._score(source, peer, msg, link)
-                    if score > 0 or peer.id == msg.destination:
+                        score, components = self._score(source, peer, msg, link)
+                    # Adaptive never hands a message to a node physically farther
+                    # from the destination: with a static topology and no mobility
+                    # model that can only strand it (e.g. on a leaf during an outage).
+                    forward_progress = (self.policy == "snapshot_shortest"
+                                        or components["progress"] > 0)
+                    if (score > 0 and forward_progress) or peer.id == msg.destination:
+                        explain[(msg.id, source.id, peer.id)] = components
                         candidates.append((-int(msg.priority), -score, msg.id, source.id,
                                            peer.id, link))
         candidates.sort(key=lambda item: item[:5])
@@ -208,6 +221,12 @@ class Simulator:
             if mid in dispatched or mid not in self.nodes[sid].buffer or mid in self.delivered:
                 continue
             msg = self.nodes[sid].buffer[mid]
+            rivals = sorted((c for c in candidates if c[2] == mid and c[3] == sid and c[4] != pid),
+                            key=lambda c: c[1])
+            self.events.append(dict(
+                tick=t, type="decision", id=mid, source=sid, chosen=pid, policy=self.policy,
+                components=explain[(mid, sid, pid)],
+                alternatives=[dict(peer=c[4], **explain[(c[2], c[3], c[4])]) for c in rivals[:3]]))
             key = id(link)
             if used_bytes.get(key, 0) + msg.size_bytes > link.bandwidth_bytes_per_tick:
                 continue
@@ -241,4 +260,7 @@ class Simulator:
                     mean_delay_ticks=(sum(self.delivered[m.id] - m.created for m in delivered) /
                                       len(delivered) if delivered else None),
                     attempts=self.attempts, failed_attempts=self.failed_attempts,
-                    predictor_samples=self.predictor.samples)
+                    predictor_samples=self.predictor.samples,
+                    predictor_weights=[round(w, 4) for w in self.predictor.weights],
+                    predictor_features=["bias", "reliability", "loss", "congestion",
+                                        "battery", "latency_term"])
