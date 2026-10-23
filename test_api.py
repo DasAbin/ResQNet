@@ -21,7 +21,8 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(r.status_code, 200, r.text)
         self.assertEqual(r.json()["metrics"]["delivered"], 1)
         self.assertEqual([e["type"] for e in r.json()["events"]],
-                         ["created", "forward", "link_changed", "forward", "delivered"])
+                         ["created", "decision", "forward", "link_changed",
+                          "decision", "forward", "delivered"])
 
     def test_reproducible_and_request_isolation(self):
         s = scenario()
@@ -61,6 +62,34 @@ class ApiTests(unittest.TestCase):
         s["messages"] *= 100
         # Duplicate IDs are also invalid; either way oversized work is rejected.
         self.assertEqual(client.post("/v1/simulations", json=s).status_code, 422)
+
+    def test_policy_selection_and_rejection(self):
+        s = scenario()
+        s["changes"] = []
+        r = client.post("/v1/simulations", json=s)
+        self.assertEqual(r.json()["events"][1]["policy"], "adaptive")
+        s["policy"] = "snapshot_shortest"
+        r = client.post("/v1/simulations", json=s)
+        self.assertEqual(r.status_code, 200, r.text)
+        self.assertTrue(all(e.get("policy") == "snapshot_shortest"
+                            for e in r.json()["events"] if e["type"] == "decision"))
+        # Baseline waits for a full active path, so nothing moves while B-C is down.
+        self.assertEqual(r.json()["metrics"]["attempts"], 0)
+        s["policy"] = "random"
+        self.assertEqual(client.post("/v1/simulations", json=s).status_code, 422)
+
+    def test_decision_events_explain_each_attempt(self):
+        r = client.post("/v1/simulations", json=scenario())
+        decisions = [e for e in r.json()["events"] if e["type"] == "decision"]
+        self.assertEqual(len(decisions), 2)
+        first = decisions[0]
+        self.assertEqual((first["id"], first["source"], first["chosen"]), ("sos", "A", "B"))
+        for key in ("progress", "p_success", "urgency", "congestion",
+                    "latency_ms", "peer_load", "total"):
+            self.assertIn(key, first["components"])
+        m = r.json()["metrics"]
+        self.assertEqual(len(m["predictor_weights"]), len(m["predictor_features"]))
+        self.assertGreater(m["predictor_samples"], 0)
 
     def test_full_source_buffer_reports_validation_error(self):
         s = {"nodes": [{"id":"A", "capacity":1}, {"id":"B"}],
