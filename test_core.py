@@ -65,6 +65,43 @@ class SimulationTests(unittest.TestCase):
         sim.tick()
         self.assertEqual(sim.delivered["urgent"], 1)
 
+    def test_decision_event_records_components_and_rivals(self):
+        # A can reach D via B or C; both hops are scored and the loser is a rival.
+        sim = Simulator([Node(x) for x in "ABCD"],
+                        [Link("A", "B"), Link("A", "C"), Link("B", "D"), Link("C", "D")])
+        sim.inject(Message("sos", "A", "D", 0, 10, Priority.SOS))
+        sim.tick()
+        decision = next(e for e in sim.events if e["type"] == "decision")
+        self.assertEqual(decision["source"], "A")
+        self.assertIn(decision["chosen"], ("B", "C"))
+        self.assertEqual(decision["policy"], "adaptive")
+        self.assertEqual(decision["components"]["progress"], 1.0)
+        self.assertEqual(len(decision["alternatives"]), 1)
+        rival = decision["alternatives"][0]
+        self.assertEqual(rival["peer"], "C" if decision["chosen"] == "B" else "B")
+        self.assertIn("p_success", rival)
+        # Deterministic: identical run, identical explanation.
+        sim2 = Simulator([Node(x) for x in "ABCD"],
+                         [Link("A", "B"), Link("A", "C"), Link("B", "D"), Link("C", "D")])
+        sim2.inject(Message("sos", "A", "D", 0, 10, Priority.SOS))
+        sim2.tick()
+        self.assertEqual(decision, next(e for e in sim2.events if e["type"] == "decision"))
+
+    def test_no_backward_handoff_onto_leaf(self):
+        # Regression: urgency must not push an SOS onto a leaf relay during an
+        # outage, where the seen-set would strand it permanently.
+        sim = Simulator([Node(x) for x in ("A", "L", "R", "C")],
+                        [Link("A", "L"), Link("L", "R"), Link("L", "C", active=False)])
+        sim.inject(Message("sos", "A", "C", 0, 20, Priority.SOS))
+        sim.tick()  # A -> L is progress
+        self.assertIn("sos", sim.nodes["L"].buffer)
+        sim.tick()  # L-C down; R is a leaf: no handoff
+        self.assertIn("sos", sim.nodes["L"].buffer)
+        self.assertNotIn("sos", sim.nodes["R"].buffer)
+        sim.links[2].active = True
+        sim.tick()
+        self.assertIn("sos", sim.delivered)
+
     def test_reproducible_seed(self):
         def run():
             sim = Simulator([Node("A"), Node("B")], [Link("A", "B", loss=.5)], seed=3)
