@@ -8,6 +8,7 @@ from __future__ import annotations
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse
 from pathlib import Path
+from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from core import Link, Message, Node, Priority, Simulator
 
@@ -60,6 +61,7 @@ class RunInput(StrictModel):
     links: list[LinkInput] = Field(max_length=2000)
     messages: list[MessageInput] = Field(max_length=MAX_MESSAGES)
     changes: list[LinkChange] = Field(default_factory=list, max_length=2000)
+    policy: Literal["adaptive", "snapshot_shortest"] = "adaptive"
     ticks: int = Field(default=20, ge=0, le=MAX_TICKS)
     seed: int = Field(default=0, ge=0, le=2**32-1)
 
@@ -96,7 +98,8 @@ class RunInput(StrictModel):
 def run_scenario(scenario: RunInput):
     """Simulate a bounded scenario. Changes take effect before sends in that tick."""
     sim = Simulator([Node(**n.model_dump()) for n in scenario.nodes],
-                    [Link(**l.model_dump()) for l in scenario.links], seed=scenario.seed)
+                    [Link(**l.model_dump()) for l in scenario.links], seed=scenario.seed,
+                    policy=scenario.policy)
     changes = {}
     for c in scenario.changes:
         changes.setdefault(c.tick, []).append(c)
@@ -130,3 +133,10 @@ def health():
 @app.get("/", include_in_schema=False)
 def dashboard():
     return FileResponse(Path(__file__).with_name("dashboard.html"))
+
+
+@app.get("/{asset}", include_in_schema=False)
+def dashboard_asset(asset: str):
+    if asset not in ("dashboard.css", "dashboard-data.js", "dashboard-render.js", "dashboard-app.js"):
+        raise HTTPException(status_code=404)
+    return FileResponse(Path(__file__).with_name(asset))
