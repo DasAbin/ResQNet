@@ -125,5 +125,39 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(client.post('/v1/lab/observe', json={'nodes':[]}).status_code, 422)
 
 
+    def test_lab_observe_rejects_unsafe_paths_and_non_stores(self):
+        import sqlite3, tempfile
+        from pathlib import Path
+        # Outside the allowed lab roots.
+        result = client.post('/v1/lab/observe', json={'nodes':[{'id':'X','db':'/etc/passwd'}]})
+        self.assertEqual(result.status_code, 200)
+        node = result.json()['nodes'][0]
+        self.assertFalse(node['ok'])
+        self.assertIn('outside allowed lab roots', node['error'])
+        # A SQLite file that is not a ResQNet store.
+        with tempfile.TemporaryDirectory() as tmp:
+            foreign = str(Path(tmp) / 'foreign.db')
+            with sqlite3.connect(foreign) as con:
+                con.execute('CREATE TABLE secrets (v TEXT)')
+                con.execute("INSERT INTO secrets VALUES ('should-not-leak')")
+            result = client.post('/v1/lab/observe', json={'nodes':[{'id':'F','db':foreign}]})
+            node = result.json()['nodes'][0]
+            self.assertFalse(node['ok'])
+            self.assertIn('not a ResQNet node store', node['error'])
+            self.assertNotIn('should-not-leak', result.text)
+        # A file that is not SQLite at all.
+        with tempfile.TemporaryDirectory() as tmp:
+            plain = Path(tmp) / 'plain.db'
+            plain.write_text('just text')
+            result = client.post('/v1/lab/observe', json={'nodes':[{'id':'P','db':str(plain)}]})
+            self.assertFalse(result.json()['nodes'][0]['ok'])
+
+    def test_lab_observe_is_loopback_only(self):
+        from fastapi.testclient import TestClient as TC
+        remote = TC(app, client=('10.9.8.7', 4321))
+        result = remote.post('/v1/lab/observe', json={'nodes':[{'id':'A','db':'/tmp/x.db'}]})
+        self.assertEqual(result.status_code, 403)
+
+
 if __name__ == "__main__":
     unittest.main()
