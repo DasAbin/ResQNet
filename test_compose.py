@@ -12,6 +12,7 @@ class ComposeStaticTests(unittest.TestCase):
         self.assertEqual(text.count('no-new-privileges:true'),3)
         self.assertEqual(text.count('volumes: ["node-'),3)
         self.assertEqual(text.count('"--allow-container-bind"'),3)
+        self.assertEqual(text.count('RESQNET_LAB_KEY=resqnet-lab-demo-key'),3)
 
 
 if __name__=='__main__':unittest.main()
