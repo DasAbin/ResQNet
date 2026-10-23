@@ -37,7 +37,16 @@
  </section>
  <section class="panel log">
   <h3>EVENT LOG</h3><div id="feed" class="feed mono" aria-live="polite"><div class="row"><span class="t">T+0</span><p>Awaiting run.</p></div></div>
-  <h3>HOW THIS SOLVES IT</h3><p class="note">When floods cut links, phones cannot reach the camp directly. ResQNet stores each message, carries it on any device that moves, and forwards it when a link returns &mdash; store, carry, forward. An online model scores each possible next hop from observed successes, so SOS traffic picks the relay most likely to get through. The same custody protocol also runs between separate OS processes over TCP (<code>node.py</code>, tested on loopback); this map shows the simulator, not field radios.</p>
+  <h3>HOW THIS SOLVES IT</h3><p class="note">When floods cut links, phones cannot reach the camp directly. ResQNet stores each message, carries it on any device that moves, and forwards it when a link returns &mdash; store, carry, forward. An online model scores each possible next hop from observed successes, so SOS traffic picks the relay most likely to get through. The same custody protocol also runs between separate OS processes over TCP (<code>node.py</code>, tested on loopback); this map shows the simulator, not field radios. The LIVE LAB panel below shows the real node processes instead, labelled OBSERVED.</p>
+ </section>
+ <section class="panel live">
+  <h3>LIVE LAB <span class="obs mono">OBSERVED &middot; NOT SIMULATED</span></h3>
+  <p class="note">Real custody events read straight from running <code>node.py</code> lab nodes' local stores on THIS machine via <code>/v1/lab/observe</code>. If a store cannot be read, the card says so &mdash; nothing here is filled in. Stores on other devices are only visible when this machine can read their files, so for two-device tests run this dashboard where at least one node runs and read the rest from the nodes' own output.</p>
+  <label class="mono">NODES (one per line, ID=store path)<textarea id="lab-nodes" rows="3" spellcheck="false">A=/tmp/resq-a.db
+B=/tmp/resq-b.db
+C=/tmp/resq-c.db</textarea></label>
+  <div class="runrow"><button id="lab-observe" class="ghost small">&#10227; OBSERVE NOW</button><label class="mono"><input type="checkbox" id="lab-auto"> AUTO-REFRESH (3s)</label></div>
+  <div id="lab-out"><p class="note">No observation yet. Start lab nodes (see README), then observe.</p></div>
  </section>
 </main>
 <script src="/dashboard-data.js"></script><script src="/dashboard-render.js"></script><script src="/dashboard-app.js"></script>
