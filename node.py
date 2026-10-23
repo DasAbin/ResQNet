@@ -8,7 +8,11 @@ a fresh 12-byte random nonce per offer, the message metadata bound as
 associated data, and the body key derived from the lab key with HKDF-SHA256.
 The AEAD tag makes tampered or wrong-key ciphertexts fail deterministically,
 and the server rejects byte-exact replayed offer frames from a bounded cache of
-recent tags. Without a key the wire is unauthenticated and plaintext. The
+recent tags. Without a key the wire is unauthenticated and plaintext. Peer
+choice per message uses the simulator's own DeliveryPredictor and score_hop
+from core.py over configured link priors updated with observed facts (measured
+round trips, custody outcomes, peer load from a status probe); the simulator's
+topology progress term is absent because the TCP lab has no map. The
 shared key deters casual forgery and eavesdropping inside a lab; it is one
 secret every node holds, so it is not per-node identity, not end-to-end
 encryption, not key rotation, and the custody store on disk stays plaintext.
@@ -29,6 +33,8 @@ import socketserver
 import sqlite3
 import threading
 import time
+
+from core import DeliveryPredictor, Link, score_hop
 
 from cryptography.exceptions import InvalidTag
 from cryptography.hazmat.primitives import hashes
@@ -248,7 +254,8 @@ class Store:
         with self.lock, closing(self._db()) as db, db:
             return {"node": self.id,
                     "pending": db.execute("SELECT count(*) FROM pending").fetchone()[0],
-                    "delivered": db.execute("SELECT count(*) FROM delivered").fetchone()[0]}
+                    "delivered": db.execute("SELECT count(*) FROM delivered").fetchone()[0],
+                    "capacity": MAX_PENDING}
 
 
 class Handler(socketserver.BaseRequestHandler):
@@ -256,10 +263,21 @@ class Handler(socketserver.BaseRequestHandler):
         self.request.settimeout(3)
         try:
             frame = _read_frame(self.request)
-            body_keys = {"op", "message", "sender"}
-            if not body_keys <= set(frame) <= body_keys | {"tag"} or frame["op"] != "offer":
-                raise ProtocolError("expected offer")
+            op = frame.get("op")
             key = self.server.key
+            if op == "status":
+                if not {"op"} <= set(frame) <= {"op", "tag"}:
+                    raise ProtocolError("invalid status probe")
+                if key is not None and frame.get("tag") != _tag(key, {"op": "status"}):
+                    raise ProtocolError("unauthenticated status probe")
+                reply = {"result": "status", **self.server.store.status()}
+                if key is not None:
+                    reply["tag"] = _tag(key, reply)
+                self.request.sendall(_frame(reply))
+                return
+            body_keys = {"op", "message", "sender"}
+            if op != "offer" or not body_keys <= set(frame) <= body_keys | {"tag"}:
+                raise ProtocolError("expected offer")
             if key is not None:
                 body = {k: frame[k] for k in body_keys}
                 tag = frame.get("tag")
@@ -329,6 +347,27 @@ def offer(host: str, port: int, message: dict, sender: str, timeout: float = 2, 
     return result["result"]
 
 
+def peer_status(host: str, port: int, key=None, timeout: float = 2) -> dict:
+    """One bounded status probe: reachability plus the peer's observed load."""
+    key = _key_bytes(key)
+    payload = {"op": "status"}
+    if key is not None:
+        payload["tag"] = _tag(key, payload)
+    with socket.create_connection((host, port), timeout=timeout) as sock:
+        sock.settimeout(timeout)
+        sock.sendall(_frame(payload))
+        result = _read_frame(sock)
+    if (result.get("result") != "status" or type(result.get("pending")) is not int
+            or type(result.get("capacity")) is not int or result["capacity"] <= 0):
+        raise ProtocolError("invalid status reply")
+    if key is not None:
+        body = {k: result[k] for k in ("node", "pending", "delivered", "capacity", "result")
+                if k in result}
+        if result.get("tag") != _tag(key, body):
+            raise ProtocolError("unauthenticated status reply")
+    return result
+
+
 def flush(store: Store, peer: tuple[str, int], key=None) -> list[tuple[str, str]]:
     """Try each buffered message once. Retain custody on transport failure.
 
@@ -348,52 +387,108 @@ def flush(store: Store, peer: tuple[str, int], key=None) -> list[tuple[str, str]
     return outcomes
 
 
-class PeerTracker:
-    """Online per-peer contact estimate (exponential moving average).
+class Peer:
+    """A configured transport peer: address, link priors, observed link state.
 
-    Only custody-accepted ACKs (stored/delivered) raise a peer's estimate and
-    only transport failure lowers it; full buffers, expiry, conflicts and
-    duplicates are not link evidence. New peers start at the initial estimate,
-    so an unknown peer is tried rather than starved. Lab-scale heuristic, not
-    the simulator's logistic model.
+    Priors (loss/reliability/congestion/latency) come from --peer options; the
+    latency feature is then replaced by measured offer round trips and the peer
+    load by status-probe replies. Nothing here is invented.
     """
 
-    def __init__(self, rate: float = 0.3, initial: float = 0.5) -> None:
-        if not 0 < rate <= 1 or not 0 <= initial <= 1:
-            raise ValueError("invalid tracker parameters")
-        self.rate, self.initial, self.scores = rate, initial, {}
+    def __init__(self, host: str, port: int, *, loss: float = 0.0, reliability: float = 1.0,
+                 congestion: float = 0.0, latency_ms: float = 20.0) -> None:
+        self.host, self.port = host, port
+        self.link = Link("self", f"{host}:{port}", latency_ms=latency_ms, loss=loss,
+                         congestion=congestion, reliability=reliability)
+        self.load: float | None = None  # observed pending/capacity from status probe
+        self.up = True  # assumption until the first probe says otherwise
 
-    def score(self, peer) -> float:
-        return self.scores.get(peer, self.initial)
+    @property
+    def address(self) -> tuple[str, int]:
+        return (self.host, self.port)
 
-    def observe(self, peer, success: bool) -> None:
-        current = self.score(peer)
-        self.scores[peer] = current + self.rate * ((1.0 if success else 0.0) - current)
-
-    def order(self, peers) -> list:
-        return sorted(peers, key=lambda p: (-self.score(p), str(p)))
+    def __repr__(self) -> str:
+        return f"Peer({self.host}:{self.port})"
 
 
-def flush_peers(store: Store, peers: list, tracker: PeerTracker, key=None) -> list[tuple]:
-    """Offer buffered messages to peers, best estimated contact first.
+def parse_peer(spec: str) -> Peer:
+    """host:port[,loss=..,reliability=..,congestion=..,latency_ms=..]"""
+    parts = spec.split(",")
+    try:
+        host, port = parts[0].rsplit(":", 1)
+        options = {}
+        for item in parts[1:]:
+            name, value = item.split("=", 1)
+            if name not in ("loss", "reliability", "congestion", "latency_ms"):
+                raise ValueError("unknown peer option: " + name)
+            options[name] = float(value)
+        return Peer(host, int(port), **options)
+    except ValueError as exc:
+        raise ValueError(f"invalid peer {spec!r}: {exc}") from exc
 
-    Every attempt is logged to the store with the estimate that ordered it, so
-    the live-lab view can show why a peer was tried in that position.
+
+def flush_peers(store: Store, peers: list, predictor: DeliveryPredictor, key=None) -> list[tuple]:
+    """Offer buffered messages using the simulator's own adaptive scoring.
+
+    Each round first probes peers for status (reachability + observed load).
+    Each message is then offered to its best-scoring reachable peer, falling
+    back down the order on refusal; the score is core.score_hop over the shared
+    DeliveryPredictor estimate, message urgency, configured congestion,
+    measured latency and observed peer load. The simulator's topology progress
+    term is excluded (the TCP lab has no map). Outcomes train the same model.
+    Every probe and attempt is logged with its score components for the UI.
     """
     outcomes = []
-    for rank, peer in enumerate(tracker.order(list(peers))):
-        score_before = tracker.score(peer)
-        tried = peer in tracker.scores
-        basis = (f"EMA {score_before:.3f} from past custody outcomes" if tried
-                 else f"untried peer, optimistic default {score_before:.3f}")
-        for mid, result in flush(store, peer, key=key):
+    for peer in peers:
+        try:
+            started = time.monotonic()
+            status = peer_status(peer.host, peer.port, key=key)
+            rtt_ms = (time.monotonic() - started) * 1000.0
+            peer.link.latency_ms = round(0.5 * peer.link.latency_ms + 0.5 * rtt_ms, 3)
+            peer.load = status["pending"] / status["capacity"]
+            peer.up = True
+            predictor.observe(peer.link, 1.0, True)
+        except (OSError, ProtocolError):
+            peer.up = False
+            peer.load = None
+            predictor.observe(peer.link, 1.0, False)
+    for message in store.pending():
+        mid = message["id"]
+        urgency = 1 + message["priority"]
+        candidates = []
+        for peer in peers:
+            if not peer.up:
+                continue
+            p_success = predictor.predict(peer.link, 1.0)
+            score = score_hop(p_success, urgency, peer.link.congestion,
+                              peer.link.latency_ms, peer.load or 0.0)
+            components = {"score": round(score, 4), "p_success": round(p_success, 4),
+                          "urgency": urgency, "congestion": peer.link.congestion,
+                          "latency_ms": round(peer.link.latency_ms, 1),
+                          "peer_load": round(peer.load or 0.0, 4), "progress": None,
+                          "basis": "core.score_hop + shared DeliveryPredictor; "
+                                   "progress term n/a (no topology in TCP lab)"}
+            candidates.append((score, f"{peer.host}:{peer.port}", peer, components))
+        candidates.sort(key=lambda item: (-item[0], item[1]))
+        if not candidates:
+            store._log("out", mid, "-", "unreachable",
+                       {"basis": "no peer answered this round's status probe"})
+            outcomes.append((mid, "unreachable", None))
+            continue
+        for score, label, peer, components in candidates:
+            try:
+                result = offer(peer.host, peer.port, message, sender=store.id, key=key)
+            except (OSError, ProtocolError):
+                result = "unreachable"
+                peer.up = False
+                predictor.observe(peer.link, 1.0, False)
+            store._log("out", mid, label, result, components)
+            outcomes.append((mid, result, peer.address))
             if result in ("stored", "delivered"):
-                tracker.observe(peer, True)
-            elif result == "unreachable":
-                tracker.observe(peer, False)
-            store._log("out", mid, f"{peer[0]}:{peer[1]}", result,
-                       {"rank": rank, "score": round(score_before, 4), "basis": basis})
-            outcomes.append((mid, result, peer))
+                store.release(mid)
+                predictor.observe(peer.link, 1.0, True)
+                break
+        # full/expired/conflict/duplicate: custody retained, no model update
     return outcomes
 
 
@@ -403,7 +498,8 @@ def main() -> None:
     parser.add_argument("--db", required=True)
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, required=True)
-    parser.add_argument("--peer", action="append", default=[], help="host:port")
+    parser.add_argument("--peer", action="append", default=[],
+                        help="host:port[,loss=..,reliability=..,congestion=..,latency_ms=..] priors")
     parser.add_argument("--interval", type=float, default=2)
     parser.add_argument("--allow-container-bind", action="store_true",
                         help="Permit wildcard bind only inside isolated, unpublished container network")
@@ -414,23 +510,20 @@ def main() -> None:
         parser.error("invalid port or interval")
     if args.host == "0.0.0.0" and not args.allow_container_bind:
         parser.error("wildcard bind requires --allow-container-bind; use only in isolated lab")
-    peers = []
-    for peer in args.peer:
-        try:
-            host, port = peer.rsplit(":", 1)
-            peers.append((host, int(port)))
-        except ValueError:
-            parser.error("peer must be host:port")
+    try:
+        peers = [parse_peer(spec) for spec in args.peer]
+    except ValueError as exc:
+        parser.error(str(exc))
     store = Store(args.db, args.id)
     server = Server((args.host, args.port), store, key=args.key)
-    tracker = PeerTracker()
+    predictor = DeliveryPredictor()
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     print(json.dumps({"listening": server.server_address, "id": args.id,
                       "wire": "hmac-sha256-tag+encrypted-body" if args.key else "open-lab-plaintext"}), flush=True)
     try:
         while True:
-            flush_peers(store, peers, tracker, key=args.key)
+            flush_peers(store, peers, predictor, key=args.key)
             time.sleep(args.interval)
     except KeyboardInterrupt:
         server.shutdown()
