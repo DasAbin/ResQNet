@@ -166,8 +166,15 @@ class Store:
             db.execute("CREATE TABLE IF NOT EXISTS pending (id TEXT PRIMARY KEY, payload TEXT NOT NULL, priority INTEGER NOT NULL, expires_at REAL NOT NULL)")
             db.execute("CREATE TABLE IF NOT EXISTS delivered (id TEXT PRIMARY KEY, payload TEXT NOT NULL, delivered_at REAL NOT NULL)")
             db.execute("CREATE TABLE IF NOT EXISTS receipts (id TEXT NOT NULL, sender TEXT NOT NULL, result TEXT NOT NULL, PRIMARY KEY(id,sender))")
+            db.execute("CREATE TABLE IF NOT EXISTS transfer_log (seq INTEGER PRIMARY KEY AUTOINCREMENT, ts REAL NOT NULL, direction TEXT NOT NULL, message_id TEXT NOT NULL, peer TEXT NOT NULL, result TEXT NOT NULL, detail TEXT)")
 
     def receive(self, message: dict, sender: str | None = None) -> str:
+        result = self._receive(message, sender)
+        # Observed custody event for the live-lab bridge; facts only, no inference.
+        self._log("in", message.get("id", "?"), sender or "local", result, None)
+        return result
+
+    def _receive(self, message: dict, sender: str | None = None) -> str:
         message = _message(message)
         if sender is not None and (not isinstance(sender,str) or not sender or len(sender.encode("utf-8"))>64 or sender==self.id):
             raise ProtocolError("invalid sender")
@@ -201,6 +208,31 @@ class Store:
             if sender is not None:
                 db.execute("INSERT INTO receipts VALUES (?,?,?)",(message["id"],sender,result))
             return result
+
+    def _log(self, direction: str, message_id: str, peer: str, result: str, detail) -> None:
+        with self.lock, closing(self._db()) as db, db:
+            db.execute("INSERT INTO transfer_log (ts, direction, message_id, peer, result, detail) VALUES (?,?,?,?,?,?)",
+                       (time.time(), direction, message_id[:128], peer[:96], result[:32],
+                        json.dumps(detail, separators=(",", ":")) if detail is not None else None))
+            db.execute("DELETE FROM transfer_log WHERE seq < (SELECT MAX(seq) FROM transfer_log) - 1000")
+
+    def transfers(self, limit: int = 50) -> list[dict]:
+        with self.lock, closing(self._db()) as db:
+            rows = db.execute(
+                "SELECT seq, ts, direction, message_id, peer, result, detail FROM transfer_log ORDER BY seq DESC LIMIT ?",
+                (max(0, min(int(limit), 200)),)).fetchall()
+            return [dict(row) for row in rows]
+
+    def delivered_recent(self, limit: int = 20) -> list[dict]:
+        with self.lock, closing(self._db()) as db:
+            rows = db.execute("SELECT payload, delivered_at FROM delivered ORDER BY delivered_at DESC LIMIT ?",
+                              (max(0, min(int(limit), 100)),)).fetchall()
+            out = []
+            for row in rows:
+                message = json.loads(row["payload"])
+                out.append({"id": message["id"], "source": message["source"],
+                            "destination": message["destination"], "delivered_at": row["delivered_at"]})
+            return out
 
     def pending(self) -> list[dict]:
         with self.lock, closing(self._db()) as db, db:
@@ -343,14 +375,24 @@ class PeerTracker:
 
 
 def flush_peers(store: Store, peers: list, tracker: PeerTracker, key=None) -> list[tuple]:
-    """Offer buffered messages to peers, best estimated contact first."""
+    """Offer buffered messages to peers, best estimated contact first.
+
+    Every attempt is logged to the store with the estimate that ordered it, so
+    the live-lab view can show why a peer was tried in that position.
+    """
     outcomes = []
-    for peer in tracker.order(list(peers)):
+    for rank, peer in enumerate(tracker.order(list(peers))):
+        score_before = tracker.score(peer)
+        tried = peer in tracker.scores
+        basis = (f"EMA {score_before:.3f} from past custody outcomes" if tried
+                 else f"untried peer, optimistic default {score_before:.3f}")
         for mid, result in flush(store, peer, key=key):
             if result in ("stored", "delivered"):
                 tracker.observe(peer, True)
             elif result == "unreachable":
                 tracker.observe(peer, False)
+            store._log("out", mid, f"{peer[0]}:{peer[1]}", result,
+                       {"rank": rank, "score": round(score_before, 4), "basis": basis})
             outcomes.append((mid, result, peer))
     return outcomes
 
