@@ -1,13 +1,19 @@
 """Experimental TCP custody-transfer node for trusted local/container labs.
 
-Not an emergency service. The wire protocol is unauthenticated and intentionally
-limited to a private lab network. Never expose its listening port to the Internet.
+Not an emergency service. Run it only on a private lab network and never expose
+its listening port to the Internet. With --key (or RESQNET_LAB_KEY) offers and
+ACKs carry an HMAC-SHA256 tag so lab peers share one secret; without a key the
+wire protocol is unauthenticated. The shared key deters casual forgery inside a
+lab; it is not encryption, key rotation, or Internet-grade security.
 """
 from __future__ import annotations
 
 import argparse
 from contextlib import closing
+import hashlib
+import hmac
 import json
+import os
 import socket
 import socketserver
 import sqlite3
@@ -47,6 +53,21 @@ def _read_frame(sock: socket.socket) -> dict:
             return obj
         buf.extend(chunk)
     raise ProtocolError("frame too large")
+
+
+def _tag(key: bytes, obj: dict) -> str:
+    canonical = json.dumps(obj, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return hmac.new(key, canonical, hashlib.sha256).hexdigest()
+
+
+def _key_bytes(key) -> bytes | None:
+    if key is None:
+        return None
+    if isinstance(key, str):
+        key = key.encode("utf-8")
+    if not key or len(key) > 1024:
+        raise ValueError("invalid lab key")
+    return key
 
 
 def _message(data: dict) -> dict:
@@ -150,10 +171,19 @@ class Handler(socketserver.BaseRequestHandler):
         self.request.settimeout(3)
         try:
             frame = _read_frame(self.request)
-            if set(frame) != {"op", "message", "sender"} or frame["op"] != "offer":
+            body_keys = {"op", "message", "sender"}
+            if not body_keys <= set(frame) <= body_keys | {"tag"} or frame["op"] != "offer":
                 raise ProtocolError("expected offer")
+            key = self.server.key
+            if key is not None:
+                body = {k: frame[k] for k in body_keys}
+                if frame.get("tag") != _tag(key, body):
+                    raise ProtocolError("unauthenticated offer")
             outcome = self.server.store.receive(frame["message"],sender=frame["sender"])
-            self.request.sendall(_frame({"id": frame["message"].get("id"), "result": outcome}))
+            reply = {"id": frame["message"].get("id"), "result": outcome}
+            if key is not None:
+                reply["tag"] = _tag(key, reply)
+            self.request.sendall(_frame(reply))
         except (ProtocolError, OSError, KeyError, TypeError) as exc:
             try:
                 self.request.sendall(_frame({"error": str(exc)[:128]}))
@@ -166,22 +196,29 @@ class Server(socketserver.ThreadingTCPServer):
     daemon_threads = True
     request_queue_size = 16
 
-    def __init__(self, address, store: Store):
+    def __init__(self, address, store: Store, key=None):
         self.store = store
+        self.key = _key_bytes(key)
         super().__init__(address, Handler)
 
 
-def offer(host: str, port: int, message: dict, sender: str, timeout: float = 2) -> str:
+def offer(host: str, port: int, message: dict, sender: str, timeout: float = 2, key=None) -> str:
+    key = _key_bytes(key)
+    payload = {"op": "offer", "message": _message(message), "sender": sender}
+    if key is not None:
+        payload["tag"] = _tag(key, payload)
     with socket.create_connection((host, port), timeout=timeout) as sock:
         sock.settimeout(timeout)
-        sock.sendall(_frame({"op": "offer", "message": _message(message), "sender": sender}))
+        sock.sendall(_frame(payload))
         result = _read_frame(sock)
     if result.get("id") != message["id"] or result.get("result") not in ("stored", "delivered", "duplicate", "conflict", "expired", "full"):
         raise ProtocolError("invalid ACK")
+    if key is not None and result.get("tag") != _tag(key, {"id": result["id"], "result": result["result"]}):
+        raise ProtocolError("unauthenticated ACK")
     return result["result"]
 
 
-def flush(store: Store, peer: tuple[str, int]) -> list[tuple[str, str]]:
+def flush(store: Store, peer: tuple[str, int], key=None) -> list[tuple[str, str]]:
     """Try each buffered message once. Retain custody on transport failure.
 
     A stored/delivered ACK is tied to this sender's accepted receipt. Retrying
@@ -191,12 +228,51 @@ def flush(store: Store, peer: tuple[str, int]) -> list[tuple[str, str]]:
     outcomes = []
     for message in store.pending():
         try:
-            result = offer(*peer, message, sender=store.id)
+            result = offer(*peer, message, sender=store.id, key=key)
         except (OSError, ProtocolError):
             result = "unreachable"
         if result in ("stored", "delivered"):
             store.release(message["id"])
         outcomes.append((message["id"], result))
+    return outcomes
+
+
+class PeerTracker:
+    """Online per-peer contact estimate (exponential moving average).
+
+    Only custody-accepted ACKs (stored/delivered) raise a peer's estimate and
+    only transport failure lowers it; full buffers, expiry, conflicts and
+    duplicates are not link evidence. New peers start at the initial estimate,
+    so an unknown peer is tried rather than starved. Lab-scale heuristic, not
+    the simulator's logistic model.
+    """
+
+    def __init__(self, rate: float = 0.3, initial: float = 0.5) -> None:
+        if not 0 < rate <= 1 or not 0 <= initial <= 1:
+            raise ValueError("invalid tracker parameters")
+        self.rate, self.initial, self.scores = rate, initial, {}
+
+    def score(self, peer) -> float:
+        return self.scores.get(peer, self.initial)
+
+    def observe(self, peer, success: bool) -> None:
+        current = self.score(peer)
+        self.scores[peer] = current + self.rate * ((1.0 if success else 0.0) - current)
+
+    def order(self, peers) -> list:
+        return sorted(peers, key=lambda p: (-self.score(p), str(p)))
+
+
+def flush_peers(store: Store, peers: list, tracker: PeerTracker, key=None) -> list[tuple]:
+    """Offer buffered messages to peers, best estimated contact first."""
+    outcomes = []
+    for peer in tracker.order(list(peers)):
+        for mid, result in flush(store, peer, key=key):
+            if result in ("stored", "delivered"):
+                tracker.observe(peer, True)
+            elif result == "unreachable":
+                tracker.observe(peer, False)
+            outcomes.append((mid, result, peer))
     return outcomes
 
 
@@ -210,6 +286,8 @@ def main() -> None:
     parser.add_argument("--interval", type=float, default=2)
     parser.add_argument("--allow-container-bind", action="store_true",
                         help="Permit wildcard bind only inside isolated, unpublished container network")
+    parser.add_argument("--key", default=os.environ.get("RESQNET_LAB_KEY"),
+                        help="Shared lab HMAC key (or RESQNET_LAB_KEY); omit for unauthenticated open-lab mode")
     args = parser.parse_args()
     if args.port <= 0 or args.port > 65535 or args.interval < .1:
         parser.error("invalid port or interval")
@@ -223,14 +301,15 @@ def main() -> None:
         except ValueError:
             parser.error("peer must be host:port")
     store = Store(args.db, args.id)
-    server = Server((args.host, args.port), store)
+    server = Server((args.host, args.port), store, key=args.key)
+    tracker = PeerTracker()
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
-    print(json.dumps({"listening": server.server_address, "id": args.id}), flush=True)
+    print(json.dumps({"listening": server.server_address, "id": args.id,
+                      "auth": "hmac-sha256" if args.key else "open-lab-unauthenticated"}), flush=True)
     try:
         while True:
-            for peer in peers:
-                flush(store, peer)
+            flush_peers(store, peers, tracker, key=args.key)
             time.sleep(args.interval)
     except KeyboardInterrupt:
         server.shutdown()
