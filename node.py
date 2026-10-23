@@ -2,13 +2,20 @@
 
 Not an emergency service. Run it only on a private lab network and never expose
 its listening port to the Internet. With --key (or RESQNET_LAB_KEY) offers and
-ACKs carry an HMAC-SHA256 tag so lab peers share one secret; without a key the
-wire protocol is unauthenticated. The shared key deters casual forgery inside a
-lab; it is not encryption, key rotation, or Internet-grade security.
+ACKs carry an HMAC-SHA256 tag so lab peers share one secret, and message bodies
+travel encrypted on the wire: a 16-byte random nonce per offer, a keystream of
+HMAC-SHA256 blocks in counter mode, and the tag computed over the ciphertext
+(encrypt-then-MAC). The construction is stdlib-only so the container image
+stays dependency-free. Without a key the wire is unauthenticated and plaintext.
+The shared key deters casual forgery and eavesdropping inside a lab; it is one
+secret every node holds, so it is not per-node identity, not end-to-end
+encryption, not key rotation, and the custody store on disk stays plaintext.
+Production would need per-node keys, TLS per link, and end-to-end AEAD.
 """
 from __future__ import annotations
 
 import argparse
+import base64
 from contextlib import closing
 import hashlib
 import hmac
@@ -68,6 +75,47 @@ def _key_bytes(key) -> bytes | None:
     if not key or len(key) > 1024:
         raise ValueError("invalid lab key")
     return key
+
+
+ENC_PREFIX = "enc1:"
+NONCE_BYTES = 16
+
+
+def _enc_key(key: bytes) -> bytes:
+    # Separate subkey for encryption so the auth tag never reuses key material.
+    return hmac.new(key, b"resqnet-node-encryption-v1", hashlib.sha256).digest()
+
+
+def _keystream(enc_key: bytes, nonce: bytes, length: int) -> bytes:
+    out = bytearray()
+    counter = 0
+    while len(out) < length:
+        out.extend(hmac.new(enc_key, nonce + counter.to_bytes(4, "big"), hashlib.sha256).digest())
+        counter += 1
+    return bytes(out[:length])
+
+
+def encrypt_body(key: bytes, plaintext: str) -> str:
+    data = plaintext.encode("utf-8")
+    nonce = os.urandom(NONCE_BYTES)
+    stream = _keystream(_enc_key(key), nonce, len(data))
+    ciphertext = bytes(a ^ b for a, b in zip(data, stream))
+    return ENC_PREFIX + base64.b64encode(nonce + ciphertext).decode("ascii")
+
+
+def decrypt_body(key: bytes, text: str) -> str:
+    try:
+        raw = base64.b64decode(text[len(ENC_PREFIX):], validate=True)
+    except (ValueError, TypeError) as exc:
+        raise ProtocolError("invalid ciphertext encoding") from exc
+    if len(raw) <= NONCE_BYTES:
+        raise ProtocolError("ciphertext too short")
+    nonce, ciphertext = raw[:NONCE_BYTES], raw[NONCE_BYTES:]
+    stream = _keystream(_enc_key(key), nonce, len(ciphertext))
+    try:
+        return bytes(a ^ b for a, b in zip(ciphertext, stream)).decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise ProtocolError("undecryptable body") from exc
 
 
 def _message(data: dict) -> dict:
@@ -179,7 +227,19 @@ class Handler(socketserver.BaseRequestHandler):
                 body = {k: frame[k] for k in body_keys}
                 if frame.get("tag") != _tag(key, body):
                     raise ProtocolError("unauthenticated offer")
-            outcome = self.server.store.receive(frame["message"],sender=frame["sender"])
+            message = frame["message"]
+            body = message.get("body")
+            if not isinstance(body, str):
+                raise ProtocolError("invalid message field: body")
+            if key is not None:
+                # Tag above already covers the ciphertext (encrypt-then-MAC).
+                if not body.startswith(ENC_PREFIX):
+                    raise ProtocolError("expected encrypted body")
+                message = dict(message)
+                message["body"] = decrypt_body(key, body)
+            elif body.startswith(ENC_PREFIX):
+                raise ProtocolError("encrypted offer but no key")
+            outcome = self.server.store.receive(message,sender=frame["sender"])
             reply = {"id": frame["message"].get("id"), "result": outcome}
             if key is not None:
                 reply["tag"] = _tag(key, reply)
@@ -204,7 +264,12 @@ class Server(socketserver.ThreadingTCPServer):
 
 def offer(host: str, port: int, message: dict, sender: str, timeout: float = 2, key=None) -> str:
     key = _key_bytes(key)
-    payload = {"op": "offer", "message": _message(message), "sender": sender}
+    wire = _message(message)
+    if key is not None:
+        # Copy so a flush retry never re-encrypts the caller's plaintext dict.
+        wire = dict(wire)
+        wire["body"] = encrypt_body(key, wire["body"])
+    payload = {"op": "offer", "message": wire, "sender": sender}
     if key is not None:
         payload["tag"] = _tag(key, payload)
     with socket.create_connection((host, port), timeout=timeout) as sock:
@@ -306,7 +371,7 @@ def main() -> None:
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     print(json.dumps({"listening": server.server_address, "id": args.id,
-                      "auth": "hmac-sha256" if args.key else "open-lab-unauthenticated"}), flush=True)
+                      "wire": "hmac-sha256-tag+encrypted-body" if args.key else "open-lab-plaintext"}), flush=True)
     try:
         while True:
             flush_peers(store, peers, tracker, key=args.key)
