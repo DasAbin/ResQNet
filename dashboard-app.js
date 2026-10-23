@@ -94,7 +94,9 @@ async function labObserve(){const out=$("#lab-out");
  renderLab(await r.json())}
 function labRow(e){const when=new Date(e.ts*1000).toLocaleTimeString();
  const dir=e.direction==="in"?"&#8672; IN from":"OUT to &#8680;";
- let basis="";if(e.detail){try{const d=JSON.parse(e.detail);basis=d.basis?` <span class="basis">${esc(d.basis)}</span>`:""}catch(_){}}
+ let basis="";if(e.detail){try{const d=JSON.parse(e.detail);
+  if(typeof d.score==="number")basis=` <span class="basis">score ${d.score} &middot; p_success ${d.p_success} &middot; load ${d.peer_load}</span>`;
+  basis+=d.basis?` <span class="basis">${esc(d.basis)}</span>`:""}catch(_){}}
  return `<div class="trow"><span class="t">${when}</span><span>${dir} ${esc(e.peer)}</span><span class="mono">${esc(e.message_id)}</span><span class="res ${esc(e.result)}">${esc(e.result).toUpperCase()}</span>${basis}</div>`}
 function renderLab(d){const out=$("#lab-out");
  out.innerHTML=`<p class="note">Observed at ${new Date(d.observed_at*1000).toLocaleTimeString()} &mdash; ${esc(d.warning)}</p>`+
