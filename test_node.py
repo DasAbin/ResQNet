@@ -5,7 +5,8 @@ import threading
 import time
 import unittest
 from pathlib import Path
-from node import Server, Store, MAX_PENDING, _frame, _read_frame, flush, offer
+from node import (PeerTracker, ProtocolError, Server, Store, MAX_PENDING,
+                  _frame, _read_frame, flush, flush_peers, offer)
 
 
 def msg(id='m1', destination='C'):
@@ -22,8 +23,8 @@ class NodeTests(unittest.TestCase):
         self.c=Store(str(Path(self.tmp.name)/'c.db'),'C')
         self.servers=[]
 
-    def server(self, store):
-        server=Server(('127.0.0.1',0),store)
+    def server(self, store, key=None):
+        server=Server(('127.0.0.1',0),store,key=key)
         t=threading.Thread(target=server.serve_forever,daemon=True);t.start()
         self.servers.append(server)
         self.addCleanup(server.server_close)
@@ -107,6 +108,51 @@ class NodeTests(unittest.TestCase):
         accepted = 'two' if rejected == 'one' else 'one'
         first.release(accepted)
         self.assertEqual(second.receive(msg(rejected), sender='A'), 'stored')
+
+    def test_keyed_offer_roundtrip_and_forgery_rejected(self):
+        key=b'lab-key'
+        bp=self.server(self.b,key=key)
+        self.assertEqual(offer(*bp,msg(),sender='A',key=key),'stored')
+        forged=msg('m2')
+        with self.assertRaises(ProtocolError):
+            offer(*bp,forged,sender='A',key=b'wrong-key')
+        with self.assertRaises(ProtocolError):
+            offer(*bp,forged,sender='A')  # untagged against keyed server
+        self.assertEqual(self.b.status()['pending'],1)  # only the legitimate one
+        # Open-lab server still accepts untagged offers (documented compatibility).
+        ap=self.server(self.a)
+        self.assertEqual(offer(*ap,msg('m3','A'),sender='B'),'delivered')
+
+    def test_unauthenticated_ack_rejected_and_custody_kept(self):
+        key=b'lab-key'
+        srv=socket.socket();srv.bind(('127.0.0.1',0));srv.listen(1)
+        self.addCleanup(srv.close)
+        port=srv.getsockname()[1]
+        def fake():
+            conn,_=srv.accept()
+            _read_frame(conn)
+            conn.sendall(_frame({'id':'m1','result':'stored'}))  # no tag
+            conn.close()
+        threading.Thread(target=fake,daemon=True).start()
+        m=msg();self.a.receive(m)
+        with self.assertRaises(ProtocolError):
+            offer('127.0.0.1',port,m,sender='A',key=key)
+        self.assertEqual(self.a.status()['pending'],1)  # custody retained
+
+    def test_peer_tracker_prefers_reachable_peer(self):
+        tracker=PeerTracker(rate=0.5)
+        self.assertEqual([p for p in tracker.order([('127.0.0.1',1),('127.0.0.1',2)])],
+                         tracker.order([('127.0.0.1',2),('127.0.0.1',1)]))  # unknowns tie-break by name
+        dead=('127.0.0.1',1)
+        cp=self.server(self.c)
+        self.a.receive(msg())
+        outcomes=flush_peers(self.a,[dead,cp],tracker)
+        self.assertEqual(sorted((mid,res) for mid,res,_ in outcomes),
+                         [('m1','delivered'),('m1','unreachable')])
+        self.assertLess(tracker.score(dead),tracker.score(cp))
+        self.assertEqual(tracker.order([dead,cp])[0],cp)
+        self.assertEqual(self.c.status()['delivered'],1)
+        self.assertEqual(self.a.status()['pending'],0)
 
     def test_priority_order_and_expiration(self):
         lo=msg('low');lo['priority']=0
