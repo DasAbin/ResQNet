@@ -36,6 +36,8 @@ class Node:
     capacity: int = 50
     buffer: dict[str, Message] = field(default_factory=dict)
     seen: set[str] = field(default_factory=set)
+    tickets: dict[str, int] = field(default_factory=dict)
+    predictability: dict[str, float] = field(default_factory=dict)
 
 
 @dataclass
@@ -61,6 +63,9 @@ class Link:
         if node == self.b:
             return self.a
         raise ValueError("node not on link")
+
+
+REPLICATION_POLICIES = ("epidemic", "spray_wait", "prophet")
 
 
 def score_hop(p_success: float, urgency: float, congestion: float, latency_ms: float,
@@ -105,15 +110,17 @@ class DeliveryPredictor:
 
 class Simulator:
     def __init__(self, nodes: Iterable[Node], links: Iterable[Link], seed: int = 0,
-                 policy: str = "adaptive") -> None:
+                 policy: str = "adaptive", spray_copies: int = 8) -> None:
         self.nodes = {n.id: n for n in nodes}
         self.links = list(links)
         if not self.nodes or any(l.a not in self.nodes or l.b not in self.nodes for l in self.links):
             raise ValueError("link endpoint missing or no nodes")
-        if policy not in ("adaptive", "snapshot_shortest"):
+        if policy not in ("adaptive", "snapshot_shortest", "epidemic",
+                          "spray_wait", "prophet"):
             raise ValueError("unknown forwarding policy")
         self.seed = seed
         self.policy = policy
+        self.spray_copies = max(2, int(spray_copies))
         self.predictor = DeliveryPredictor()
         self.tick_number = 0
         self.created: dict[str, Message] = {}
@@ -121,6 +128,7 @@ class Simulator:
         self.events: list[dict] = []
         self.attempts = 0
         self.failed_attempts = 0
+        self.copies = 0
 
     def inject(self, message: Message) -> None:
         if message.source not in self.nodes or message.destination not in self.nodes:
@@ -138,6 +146,7 @@ class Simulator:
                 raise ValueError("source buffer full")
             node.buffer[message.id] = message
             node.seen.add(message.id)
+            node.tickets[message.id] = self.spray_copies
             self.events.append(dict(tick=message.created, type="created", id=message.id,
                                     node=message.source))
 
@@ -186,6 +195,35 @@ class Simulator:
                            latency_ms=link.latency_ms, peer_load=round(load, 4),
                            total=round(score, 4))
 
+    def _prophet_update(self) -> None:
+        """Classic PRoPHET bookkeeping: encounter boost, aging, transitivity."""
+        gamma, p_init, beta = 0.98, 0.75, 0.25
+        for node in self.nodes.values():
+            for dest in list(node.predictability):
+                node.predictability[dest] *= gamma
+                if node.predictability[dest] < 0.01:
+                    del node.predictability[dest]
+        for link in self.links:
+            if not link.active:
+                continue
+            a, b = self.nodes[link.a], self.nodes[link.b]
+            a.predictability[b.id] = (a.predictability.get(b.id, 0.0)
+                                      + (1 - a.predictability.get(b.id, 0.0)) * p_init)
+            b.predictability[a.id] = (b.predictability.get(a.id, 0.0)
+                                      + (1 - b.predictability.get(a.id, 0.0)) * p_init)
+            p_ab = a.predictability[b.id]
+            for dest, p_bd in list(b.predictability.items()):
+                if dest == a.id:
+                    continue
+                old = a.predictability.get(dest, 0.0)
+                a.predictability[dest] = old + (1 - old) * p_ab * p_bd * beta
+            p_ba = b.predictability[a.id]
+            for dest, p_ad in list(a.predictability.items()):
+                if dest == b.id:
+                    continue
+                old = b.predictability.get(dest, 0.0)
+                b.predictability[dest] = old + (1 - old) * p_ba * p_ad * beta
+
     def tick(self) -> None:
         self.tick_number += 1
         t = self.tick_number
@@ -193,11 +231,15 @@ class Simulator:
             for mid, msg in list(node.buffer.items()):
                 if t - msg.created > msg.ttl or mid in self.delivered:
                     del node.buffer[mid]
+                    node.tickets.pop(mid, None)
                     self.events.append(dict(tick=t, type="expired" if mid not in self.delivered else "cleared",
                                             id=mid, node=node.id))
+        if self.policy == "prophet":
+            self._prophet_update()
         # Snapshot prevents a message from traversing multiple hops in one tick.
         candidates = []
         explain: dict[tuple[str, str, str], dict] = {}
+        replicate = self.policy in REPLICATION_POLICIES
         for source in self.nodes.values():
             for msg in source.buffer.values():
                 if msg.id in self.delivered:
@@ -207,6 +249,20 @@ class Simulator:
                         continue
                     peer = self.nodes[link.peer(source.id)]
                     if msg.id in peer.seen or len(peer.buffer) >= peer.capacity and peer.id != msg.destination:
+                        continue
+                    if replicate:
+                        if self.policy == "spray_wait":
+                            # Binary spray: while tickets remain, hand half over;
+                            # the last ticket only walks to the destination itself.
+                            if source.tickets.get(msg.id, 1) <= 1 and peer.id != msg.destination:
+                                continue
+                        elif self.policy == "prophet":
+                            if (peer.id != msg.destination and not
+                                    peer.predictability.get(msg.destination, 0.0)
+                                    > source.predictability.get(msg.destination, 0.0)):
+                                continue
+                        candidates.append((-int(msg.priority), 0.0, msg.id, source.id,
+                                           peer.id, link))
                         continue
                     if self.policy == "snapshot_shortest":
                         current = self._active_distance(source.id, msg.destination)
@@ -228,22 +284,27 @@ class Simulator:
                                            peer.id, link))
         candidates.sort(key=lambda item: item[:5])
         used_bytes: dict[int, int] = {}
-        dispatched: set[str] = set()
+        dispatched: set = set()
         for _, _, mid, sid, pid, link in candidates:
-            if mid in dispatched or mid not in self.nodes[sid].buffer or mid in self.delivered:
+            marker = (mid, pid) if replicate else mid
+            if marker in dispatched or mid not in self.nodes[sid].buffer or mid in self.delivered:
                 continue
             msg = self.nodes[sid].buffer[mid]
-            rivals = sorted((c for c in candidates if c[2] == mid and c[3] == sid and c[4] != pid),
-                            key=lambda c: c[1])
-            self.events.append(dict(
-                tick=t, type="decision", id=mid, source=sid, chosen=pid, policy=self.policy,
-                components=explain[(mid, sid, pid)],
-                alternatives=[dict(peer=c[4], **explain[(c[2], c[3], c[4])]) for c in rivals[:3]]))
+            if (self.policy == "spray_wait" and pid != msg.destination
+                    and self.nodes[sid].tickets.get(mid, 1) <= 1):
+                continue  # spent its last ticket earlier this same tick
+            if not replicate:
+                rivals = sorted((c for c in candidates if c[2] == mid and c[3] == sid and c[4] != pid),
+                                key=lambda c: c[1])
+                self.events.append(dict(
+                    tick=t, type="decision", id=mid, source=sid, chosen=pid, policy=self.policy,
+                    components=explain[(mid, sid, pid)],
+                    alternatives=[dict(peer=c[4], **explain[(c[2], c[3], c[4])]) for c in rivals[:3]]))
             key = id(link)
             if used_bytes.get(key, 0) + msg.size_bytes > link.bandwidth_bytes_per_tick:
                 continue
             used_bytes[key] = used_bytes.get(key, 0) + msg.size_bytes
-            dispatched.add(mid)
+            dispatched.add(marker)
             source, peer = self.nodes[sid], self.nodes[pid]
             self.attempts += 1
             # Keyed per opportunity, not traversal order: paired policies see the
@@ -258,11 +319,21 @@ class Simulator:
                 self.failed_attempts += 1
                 continue
             peer.seen.add(mid)
-            del source.buffer[mid]
             if pid == msg.destination:
+                if not replicate:
+                    del source.buffer[mid]
                 self.delivered[mid] = t
                 self.events.append(dict(tick=t, type="delivered", id=mid, node=pid))
+            elif replicate:
+                self.copies += 1
+                peer.buffer[mid] = msg
+                if self.policy == "spray_wait":
+                    held = source.tickets.get(mid, 1)
+                    give = held // 2
+                    peer.tickets[mid] = give
+                    source.tickets[mid] = held - give
             else:
+                del source.buffer[mid]
                 peer.buffer[mid] = msg
 
     def metrics(self) -> dict:
@@ -275,4 +346,9 @@ class Simulator:
                     predictor_samples=self.predictor.samples,
                     predictor_weights=[round(w, 4) for w in self.predictor.weights],
                     predictor_features=["bias", "reliability", "loss", "congestion",
-                                        "battery", "latency_term"])
+                                        "battery", "latency_term"],
+                    policy=self.policy, copies=self.copies,
+                    attempts_per_delivered=(round(self.attempts / len(delivered), 3)
+                                            if delivered else None),
+                    copies_per_delivered=(round(self.copies / len(delivered), 3)
+                                          if delivered else None))
