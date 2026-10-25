@@ -115,8 +115,8 @@ class Simulator:
         self.links = list(links)
         if not self.nodes or any(l.a not in self.nodes or l.b not in self.nodes for l in self.links):
             raise ValueError("link endpoint missing or no nodes")
-        if policy not in ("adaptive", "snapshot_shortest", "epidemic",
-                          "spray_wait", "prophet"):
+        if policy not in ("adaptive", "adaptive_static", "snapshot_shortest",
+                          "direct_only", "epidemic", "spray_wait", "prophet"):
             raise ValueError("unknown forwarding policy")
         self.seed = seed
         self.policy = policy
@@ -250,6 +250,14 @@ class Simulator:
                     peer = self.nodes[link.peer(source.id)]
                     if msg.id in peer.seen or len(peer.buffer) >= peer.capacity and peer.id != msg.destination:
                         continue
+                    if self.policy == "direct_only":
+                        # No custody transfer: a message moves only when its
+                        # destination is the direct contact. Everything else waits.
+                        if peer.id != msg.destination:
+                            continue
+                        candidates.append((-int(msg.priority), 0.0, msg.id, source.id,
+                                           peer.id, link))
+                        continue
                     if replicate:
                         if self.policy == "spray_wait":
                             # Binary spray: while tickets remain, hand half over;
@@ -293,7 +301,7 @@ class Simulator:
             if (self.policy == "spray_wait" and pid != msg.destination
                     and self.nodes[sid].tickets.get(mid, 1) <= 1):
                 continue  # spent its last ticket earlier this same tick
-            if not replicate:
+            if not replicate and self.policy != "direct_only":
                 rivals = sorted((c for c in candidates if c[2] == mid and c[3] == sid and c[4] != pid),
                                 key=lambda c: c[1])
                 self.events.append(dict(
@@ -312,7 +320,8 @@ class Simulator:
             key = f"{self.seed}:{t}:{mid}:{min(link.a, link.b)}:{max(link.a, link.b)}"
             u = int.from_bytes(hashlib.blake2b(key.encode(), digest_size=8).digest(), "big") / 2**64
             success = u < (1 - link.loss) * link.reliability
-            self.predictor.observe(link, source.battery, success)
+            if self.policy != "adaptive_static":
+                self.predictor.observe(link, source.battery, success)
             self.events.append(dict(tick=t, type="forward" if success else "lost",
                                     id=mid, source=sid, destination=pid))
             if not success:
