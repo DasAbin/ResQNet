@@ -1,8 +1,10 @@
 # ResQNet
 
-An experimental opportunistic disaster-network simulator: messages are buffered across partitions and forwarded when contacts return, with priority scheduling and an adaptive link-success estimate.
+An experimental delay-tolerant networking (DTN) project: how field reports and supply coordination move between places that share no network, carried by contacts that happen anyway - a supply vehicle on its normal round, not trips invented for messages.
 
-**Status:** simulator core with explainable forwarding, local FastAPI/dashboard with flood-rescue scenarios, and a separate trusted-lab TCP socket prototype. No trained disaster predictor, secure mesh, or cloud service is shipped. Never use this for a real distress call.
+**Use case, stated honestly:** delayed field reports ("road blocked at km 4", "water for 40, two days left") and supply coordination between disconnected locations. It is NOT for urgent rescue: if help is close enough to hear you, shouting is better, and real offline device-to-device messaging already exists elsewhere (Briar, Bridgefy, Meshtastic radios). What this project demonstrates and evaluates is the protocol layer: custody transfer with receipts, lifecycle tracking (received / claimed / resolved), five forwarding policies, and repeatable seeded experiments comparing them on delivery ratio, delay and overhead.
+
+**Status:** simulator core with five forwarding policies and explainable decisions, a seeded evaluation harness (EXPERIMENTS.md), local FastAPI/dashboard with a protocol-comparison view, and a separate trusted-lab TCP socket prototype (discovery + request lifecycle). No trained disaster predictor, secure mesh, or cloud service is shipped. Never use this for a real distress call.
 
 ## Quick start
 
@@ -15,9 +17,26 @@ python3 example.py
 
 `example.py` takes A-B-C, disconnects B-C for one tick, sends an SOS from A to C, then restores B-C. The output contains a forwarding trace and run metrics. Links are bidirectional; transfer is custody-based and one hop per tick. See [ARCHITECTURE.md](ARCHITECTURE.md) for design, limitations and roadmap.
 
+## Protocol evaluation
+
+Five forwarding policies run in the same tick-accurate simulator: `adaptive` (single-copy, learned link-success scoring), `snapshot_shortest` (classic currently-complete-path routing, included as the straw man), `epidemic` (unbounded replication), `spray_wait` (binary ticket spraying, L=4), and `prophet` (encounter-history predictability with aging and transitivity).
+
+```bash
+python3 experiments.py            # prints the table; --seeds N --md EXPERIMENTS.md
+```
+
+Fixed seeds make the run reproducible. Headline results over 24 seeds (full table in [EXPERIMENTS.md](EXPERIMENTS.md)):
+
+- On the scheduled supply-run scenario, relaying via the vehicle's normal round delivers 4/4 at mean delay 32.3 ticks; waiting for one rare direct contact delivers the same messages at 44.5 ticks (38% slower, identical message load). With perishable TTLs (< 48 ticks) waiting loses reports entirely.
+- `snapshot_shortest` delivers 0/4 on that topology: a routing rule that needs a currently-complete path collapses under scheduled contacts. Custody transfer is the point of the project.
+- On a lossy static mesh, epidemic is fastest (delay 2.9 vs adaptive 3.2 ticks) but costs 85% more transmissions per delivered message (7.7 vs 4.2); spray-and-wait with L=4 sits between. PRoPHET matches epidemic's overhead here because transitivity floods a static mesh.
+- Documented weakness: PRoPHET's cold start loses one message on the supply run (0.75 delivery) - with no encounter history yet, it declines the only contact that would have carried it.
+
+The dashboard's "compare all forwarding policies" view runs the same five policies live on any preset and explains each adaptive hop; the table above is the multi-seed evidence behind it.
+
 ## Next milestones
 
-1. Evaluate more graph families and proper DTN baselines with equal resource budgets.
+1. Evaluate more graph families and mobility patterns with equal resource budgets.
 2. Wire the socket node's peer selection to the estimator (currently separate).
 3. Move the socket node beyond one shared lab key (per-node identity, end-to-end and at-rest encryption, bounded retries) before any non-isolated use.
 
