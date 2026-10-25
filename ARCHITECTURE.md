@@ -16,8 +16,9 @@ The model currently uses custody transfer (single copy) and per-node seen IDs. T
 - `api.py`: local FastAPI service; validated `POST /v1/simulations` (scenario + `policy`) returning events, buffers, metrics with predictor state; serves the dashboard assets on loopback.
 - `dashboard.html` + `dashboard.css` + `dashboard-data.js` + `dashboard-render.js` + `dashboard-app.js`: dependency-free dashboard. Flood-rescue presets (all synthetic people/places), message and outage editors, timeline playback reconstructed from API events, per-hop "why" inspector, policy A/B comparison, estimator panel.
 - `node.py`: separate trusted-lab TCP custody-transfer prototype between OS processes, with bounded payloads, SQLite persistence and receipts, optional shared-key HMAC authentication plus encrypted bodies on the wire (`--key` / `RESQNET_LAB_KEY`), and per-message peer choice through the simulator's own `DeliveryPredictor`/`score_hop` over configured priors plus observed round trips, outcomes and peer load.
+- `lab.py`: small send/status CLI over the node store, so live demos do not need inline Python; stdlib only.
 - `benchmark.py`: paired adaptive-vs-baseline comparison on held-out seeds; results in BENCHMARK.md.
-- `test_*.py`: unit, API, benchmark, Compose-static and loopback process tests (35 tests).
+- `test_*.py`: unit, API, benchmark, Compose-static and loopback process tests (60 tests).
 
 ## Boundaries and evaluation
 
