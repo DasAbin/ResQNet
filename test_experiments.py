@@ -50,12 +50,19 @@ class HeadlineClaimTests(unittest.TestCase):
         self.assertGreater(direct["epidemic"]["attempts_per_delivered"]["mean"],
                            direct["direct_only"]["attempts_per_delivered"]["mean"])
 
-    def test_adaptive_greedy_limitation_is_measured(self):
-        # Documented weakness: adaptive declines relays that are not physically
-        # closer, so on the direct scenario it waits like direct_only.
+    def test_adaptive_relays_instead_of_waiting_on_direct_trace(self):
+        # Regression guard: an earlier greedy version measured progress on the
+        # static plan map, so never-used direct edges zeroed the progress term
+        # and adaptive waited exactly like direct_only (44.5 ticks). The
+        # encounter-weighted distance fix must not regress: adaptive now
+        # relays like flooding but keeps single-copy efficiency.
         direct = self.results["supply-run-direct"]
-        self.assertEqual(direct["adaptive"]["mean_delay_ticks"]["mean"],
-                         direct["direct_only"]["mean_delay_ticks"]["mean"])
+        self.assertEqual(direct["adaptive"]["delivery_ratio"]["mean"], 1.0)
+        self.assertLess(direct["adaptive"]["mean_delay_ticks"]["mean"],
+                        direct["direct_only"]["mean_delay_ticks"]["mean"])
+        self.assertLess(direct["adaptive"]["attempts_per_delivered"]["mean"],
+                        direct["epidemic"]["attempts_per_delivered"]["mean"])
+        self.assertEqual(direct["adaptive"]["copies_per_delivered"]["mean"], 0.0)
 
     def test_learning_isolation_no_measured_contribution(self):
         # adaptive_static scores identically but never learns. On every current
