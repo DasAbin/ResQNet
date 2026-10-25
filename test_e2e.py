@@ -62,14 +62,17 @@ class ProcessLabTests(unittest.TestCase):
                            'body': 'Synthetic test only', 'priority': 2,
                            'expires_at': time.time() + 60}
                 self.assertEqual(source.receive(message), 'stored')
-                start(1, (2,))
+                start(1, (0, 2))
                 until(lambda: Store(str(stores[1]), 'B').status()['pending'] == 1 and
                       source.status()['pending'] == 0, 'custody at B')
                 self.assertEqual(source.status()['pending'], 0)
                 self.assertEqual(Store(str(stores[1]), 'B').status()['pending'], 1)
-                start(2)
+                start(2, (1,))
                 until(lambda: Store(str(stores[2]), 'C').status()['delivered'] == 1 and
                       Store(str(stores[1]), 'B').status()['pending'] == 0, 'delivery at C')
+                until(lambda: any(r['id'] == 'rcpt-integration-synthetic'
+                                  for r in Store(str(stores[0]), 'A').delivered_recent()),
+                      'delivery receipt back at A')
                 self.assertEqual(Store(str(stores[2]), 'C').status()['pending'], 0)
             finally:
                 for proc in processes:
