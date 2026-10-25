@@ -65,7 +65,7 @@ class RunInput(StrictModel):
     links: list[LinkInput] = Field(max_length=2000)
     messages: list[MessageInput] = Field(max_length=MAX_MESSAGES)
     changes: list[LinkChange] = Field(default_factory=list, max_length=2000)
-    policy: Literal["adaptive", "snapshot_shortest"] = "adaptive"
+    policy: Literal["adaptive", "snapshot_shortest", "epidemic", "spray_wait", "prophet"] = "adaptive"
     ticks: int = Field(default=20, ge=0, le=MAX_TICKS)
     seed: int = Field(default=0, ge=0, le=2**32-1)
 
