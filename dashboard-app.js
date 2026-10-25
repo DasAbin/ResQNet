@@ -27,7 +27,7 @@ async function run(){stop();readTables();$("#run").disabled=true;
  try{runs.adaptive=await post(scenarioFrom(cur,messages,changes,"adaptive"));
   if($("#compare").checked){
    runs.compare={};
-   for(const p of["snapshot_shortest","epidemic","spray_wait","prophet"])
+   for(const p of["direct_only","snapshot_shortest","epidemic","spray_wait","prophet","adaptive_static"])
     runs.compare[p]=await post(scenarioFrom(cur,messages,changes,p));
   }else delete runs.compare;
   selDecision=null;tick=0;$("#feed").innerHTML="";draw(0);renderModel();play();
@@ -87,9 +87,19 @@ function animate(svg,[x1,y1],[x2,y2],cls){const g=el("g",{class:"pk "+cls}),r=el
   g.setAttribute("transform",`translate(${x1+(x2-x1)*k},${y1+(y2-y1)*k})`);
   if(k<1&&timer)requestAnimationFrame(step);else g.remove()})()}
 let labTimer=null;
-async function labObserve(){const out=$("#lab-out");
- const lines=$("#lab-nodes").value.split("\n").map(s=>s.trim()).filter(Boolean);
+function labNodes(){const lines=$("#lab-nodes").value.split("\n").map(s=>s.trim()).filter(Boolean);
  const nodes=[];for(const ln of lines){const i=ln.indexOf("=");if(i<1)continue;nodes.push({id:ln.slice(0,i).trim(),db:ln.slice(i+1).trim()})}
+ return nodes}
+async function labPost(url,body){const r=await fetch(url,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});
+ const j=await r.json().catch(()=>({}));if(!r.ok)throw Error(j.detail||("API "+r.status));return j}
+async function labSend(){const nodes=labNodes(),from=$("#lab-from").value,n=nodes.find(x=>x.id===from);
+ if(!n){alert("Pick a FROM node from the list above");return}
+ try{const j=await labPost("/v1/lab/send",{id:n.id,db:n.db,to:$("#lab-to").value.trim(),body:$("#lab-body").value.trim()||"synthetic report",priority:+$("#lab-pri").value});
+  $("#lab-body").value="";labObserve();}catch(e){alert("Send failed: "+e.message)}}
+async function labAct(btn){const{node,db,req,act}=btn.dataset;
+ try{await labPost("/v1/lab/"+act,{id:node,db,request:req});labObserve();}catch(e){alert(act+" failed: "+e.message)}}
+async function labObserve(){const out=$("#lab-out");
+ const nodes=labNodes();
  if(!nodes.length){out.innerHTML='<p class="note">List at least one node as ID=store-path.</p>';return}
  let r;try{r=await fetch("/v1/lab/observe",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({nodes})});}
  catch(e){out.innerHTML=`<p class="note">Observe failed: ${esc(e.message)}</p>`;return}
@@ -102,10 +112,16 @@ function labRow(e){const when=new Date(e.ts*1000).toLocaleTimeString();
   basis+=d.basis?` <span class="basis">${esc(d.basis)}</span>`:""}catch(_){}}
  return `<div class="trow"><span class="t">${when}</span><span>${dir} ${esc(e.peer)}</span><span class="mono">${esc(e.message_id)}</span><span class="res ${esc(e.result)}">${esc(e.result).toUpperCase()}</span>${basis}</div>`}
 function renderLab(d){const out=$("#lab-out");
+ const SYS=["rcpt-","clm-","res-"],isSys=id=>SYS.some(p=>id.startsWith(p));
+ const everywhere=new Set();d.nodes.forEach(n=>{if(n.ok)(n.delivered_recent||[]).forEach(m=>everywhere.add(m.id))});
+ const life=id=>({received:everywhere.has("rcpt-"+id),claimed:everywhere.has("clm-"+id),resolved:everywhere.has("res-"+id)});
+ const chips=id=>{const l=life(id);return [l.received&&"RECEIVED",l.claimed&&"CLAIMED",l.resolved&&"RESOLVED"].filter(Boolean).map(c=>`<span class="res delivered">${c}</span>`).join(" ")};
  out.innerHTML=`<p class="note">Observed at ${new Date(d.observed_at*1000).toLocaleTimeString()} &mdash; ${esc(d.warning)}</p>`+
   d.nodes.map(n=>{if(!n.ok)return `<div class="lcard bad"><h4>${esc(n.id)} <span class="mono">${esc(n.db)}</span></h4><p class="note">UNAVAILABLE: ${esc(n.error)}</p></div>`;
    const pend=n.pending.map(m=>`<tr><td>${esc(m.id)}</td><td>${esc(m.source)}&rarr;${esc(m.destination)}</td><td>${PN[m.priority]||m.priority}</td><td>${esc(m.body_preview)}</td></tr>`).join("");
-   const del=n.delivered_recent.map(m=>`<tr><td>${esc(m.id)}</td><td>${esc(m.source)}&rarr;${esc(m.destination)}</td><td>${new Date(m.delivered_at*1000).toLocaleTimeString()}</td></tr>`).join("");
+   const del=n.delivered_recent.map(m=>{const sys=isSys(m.id);const l=sys?null:life(m.id);
+    const acts=sys?"":` <button class="ghost small" data-act="claim" data-node="${esc(n.id)}" data-db="${esc(n.db)}" data-req="${esc(m.id)}" ${l.claimed?"disabled":""}>CLAIM</button> <button class="ghost small" data-act="resolve" data-node="${esc(n.id)}" data-db="${esc(n.db)}" data-req="${esc(m.id)}" ${l.resolved?"disabled":""}>RESOLVE</button>`;
+    return `<tr><td>${esc(m.id)}</td><td>${esc(m.source)}&rarr;${esc(m.destination)}</td><td>${new Date(m.delivered_at*1000).toLocaleTimeString()}</td><td>${sys?"":chips(m.id)}${acts}</td></tr>`}).join("");
    const trs=n.transfers.map(labRow).join("");
    return `<div class="lcard"><h4>${esc(n.id)} <span class="mono">${esc(n.db)}</span></h4>
     <div class="counts mono"><span>PENDING <b>${n.pending_count}</b></span><span>DELIVERED <b>${n.delivered_count}</b></span></div>
@@ -123,6 +139,10 @@ function boot(){const sel=$("#preset");sel.innerHTML=PRESETS.map((p,i)=>`<option
  $("#add-chg").onclick=()=>{const l=cur.links[0];changes.push({tick:1,a:l.a,b:l.b,active:true});chgTable()};
  $("#run").onclick=run;$("#play").onclick=play;$("#back").onclick=()=>{stop();if(runs.adaptive&&tick>0)go(tick-1)};
  $("#lab-observe").onclick=labObserve;
+ $("#lab-send").onclick=labSend;
+ $("#lab-nodes").addEventListener("input",()=>{const ns=labNodes(),sel=$("#lab-from");sel.innerHTML=ns.map(n=>`<option>${esc(n.id)}</option>`).join("")});
+ $("#lab-from").innerHTML=labNodes().map(n=>`<option>${esc(n.id)}</option>`).join("");
+ document.body.addEventListener("click",e=>{if(e.target.dataset.act)labAct(e.target)});
  $("#lab-auto").onchange=e=>{clearInterval(labTimer);labTimer=e.target.checked?setInterval(labObserve,3000):null;if(labTimer)labObserve()};
  labObserve();  // show current node state on load; unavailable stores say so
  $("#fwd").onclick=()=>{stop();if(runs.adaptive&&tick<cur.ticks){go(tick+1);if(tick>=cur.ticks)verdict()}};
