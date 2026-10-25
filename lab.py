@@ -5,6 +5,8 @@ Wraps node.Store so a live demo does not need inline Python one-liners:
     python3 lab.py send --db /tmp/resq-a.db --node A --to B \
         --body "Synthetic test SOS" --priority 2
     python3 lab.py status --db /tmp/resq-a.db --node A --transfers 10
+    python3 lab.py claim --db /tmp/resq-b.db --node B --request <id>
+    python3 lab.py track --db /tmp/resq-a.db --node A --request <id>
 
 Same trusted-lab scope as node.py: synthetic messages only, isolated
 networks, no real distress traffic.
@@ -15,7 +17,8 @@ import secrets
 import sys
 import time
 
-from node import ProtocolError, Store
+from node import (CLAIM_PREFIX, RECEIPT_PREFIX, RESOLVE_PREFIX,
+                  ProtocolError, Store, make_claim, make_resolve)
 
 
 def _send(args) -> int:
@@ -64,6 +67,53 @@ def _status(args) -> int:
         return 0
 
 
+def _find_request(store: Store, request_id: str) -> dict | None:
+    return store.get(request_id)
+
+
+def _lifecycle(args, make, verb: str) -> int:
+    store = Store(args.db, args.node)
+    request = _find_request(store, args.request)
+    if request is None:
+        print(f"error: request {args.request!r} not in this node's store", file=sys.stderr)
+        return 2
+    message = make(request, args.node)
+    if message is None:
+        print(f"error: cannot {verb} a system message id", file=sys.stderr)
+        return 2
+    result = store.receive(message)
+    print(f"{result} {message['id']}")
+    return 0 if result in ("stored", "delivered", "duplicate") else 1
+
+
+def _claim(args) -> int:
+    return _lifecycle(args, make_claim, "claim")
+
+
+def _resolve(args) -> int:
+    return _lifecycle(args, make_resolve, "resolve")
+
+
+def _track(args) -> int:
+    """Lifecycle of one request id as seen from THIS node's store.
+
+    Distinct states: sent (still buffered here), received (destination
+    receipt arrived), claimed (an operator accepted it), resolved (an
+    operator marked it done). Received is not claimed; claimed is not
+    resolved.
+    """
+    store = Store(args.db, args.node)
+    delivered = {m["id"] for m in store.delivered_recent(500)}
+    pending = {m["id"] for m in store.pending()}
+    lines = [f"request {args.request} at node {args.node}:"]
+    lines.append(f"  buffered here: {'yes' if args.request in pending else 'no'}")
+    lines.append(f"  received (rcpt-): {'yes' if RECEIPT_PREFIX + args.request in delivered else 'no'}")
+    lines.append(f"  claimed  (clm-):  {'yes' if CLAIM_PREFIX + args.request in delivered else 'no'}")
+    lines.append(f"  resolved (res-):  {'yes' if RESOLVE_PREFIX + args.request in delivered else 'no'}")
+    print("\n".join(lines))
+    return 0
+
+
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description="ResQNet lab send/status helper")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -87,6 +137,18 @@ def main(argv=None) -> int:
     status.add_argument("--interval", type=float, default=2.0,
                         help="watch refresh interval in seconds (default 2)")
     status.set_defaults(func=_status)
+    claim = sub.add_parser("claim", parents=[common],
+                           help="claim a request this node holds (accepted, not resolved)")
+    claim.add_argument("--request", required=True, help="request id to claim")
+    claim.set_defaults(func=_claim)
+    resolve = sub.add_parser("resolve", parents=[common],
+                             help="mark a request this node holds as resolved")
+    resolve.add_argument("--request", required=True, help="request id to resolve")
+    resolve.set_defaults(func=_resolve)
+    track = sub.add_parser("track", parents=[common],
+                           help="show one request's lifecycle state at this node")
+    track.add_argument("--request", required=True, help="request id to track")
+    track.set_defaults(func=_track)
     args = parser.parse_args(argv)
     return args.func(args)
 
