@@ -18,8 +18,8 @@ Means (+/- sample standard deviation) over 24 fixed seeds (0..23). Reproduce wit
 
 | policy | delivery ratio | mean delay (ticks) | attempts / delivered | copies / delivered |
 | --- | --- | --- | --- | --- |
-| adaptive | 1.0 +/- 0.0 | 44.531 +/- 0.507 | 1.385 +/- 0.353 | 0.0 +/- 0.0 |
-| adaptive_static | 1.0 +/- 0.0 | 44.531 +/- 0.507 | 1.385 +/- 0.353 | 0.0 +/- 0.0 |
+| adaptive | 1.0 +/- 0.0 | 32.323 +/- 0.593 | 2.833 +/- 0.668 | 0.0 +/- 0.0 |
+| adaptive_static | 1.0 +/- 0.0 | 32.323 +/- 0.593 | 2.833 +/- 0.668 | 0.0 +/- 0.0 |
 | snapshot_shortest | 1.0 +/- 0.0 | 44.531 +/- 0.507 | 1.385 +/- 0.353 | 0.0 +/- 0.0 |
 | direct_only | 1.0 +/- 0.0 | 44.531 +/- 0.507 | 1.385 +/- 0.353 | 0.0 +/- 0.0 |
 | epidemic | 1.0 +/- 0.0 | 32.323 +/- 0.593 | 3.531 +/- 0.808 | 1.5 +/- 0.0 |
@@ -44,7 +44,7 @@ attempts / delivered counts every link transmission that delivered message neede
 
 - `direct_only` is the causal baseline for the relay question: identical messages and contact trace, but intermediate custody is refused. On supply-run-direct it waits for the late direct contacts (44.5 ticks mean) while epidemic/spray-and-wait relay via the vehicle at 32.3. On supply-run-relay (no direct contacts scheduled) it delivers nothing.
 - `snapshot_shortest` is a straw man for classic connected-path routing, not primary evidence: it needs a currently-complete path, so it stalls under scheduled contacts.
-- `adaptive` is greedy: it declines any relay not physically closer to the destination, so on supply-run-direct it waits exactly like `direct_only` (44.5 ticks). Contact-plan-aware routing is future work.
+- `adaptive` ranks hops by weighted contact-map distance: a link that has come up costs 1 hop, a plan link never observed up costs N hops, and on a tie a message leaves a route that relies on unobserved links. An earlier version measured progress on the static plan map: the never-used direct edges made relaying look like zero progress, so adaptive waited exactly like `direct_only` (44.5 ticks). The causal scenario exposed that; the encounter-weighted fix above is the result, and the failure is preserved here as history.
 - `adaptive_static` isolates the learned predictor: identical scoring, learning updates off. Its outcomes match `adaptive` on every current scenario, so no learning advantage is claimed anywhere in this project.
 - Spray-and-wait is budget-sensitive: with L=3 on lossy-mesh every copy strands in its wait phase (0/6); L=4 restores full delivery.
 - Shorten the supply-run report TTLs below ~48 ticks and waiting/direct policies lose messages that relaying still delivers.
