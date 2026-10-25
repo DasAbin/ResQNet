@@ -37,22 +37,31 @@ def _send(args) -> int:
     return 0 if result in ("stored", "delivered", "duplicate") else 1
 
 
+def _status_text(store: Store, limit: int) -> str:
+    info = store.status()
+    lines = [f"node {info['node']}: pending {info['pending']}, "
+             f"delivered {info['delivered']}, capacity {info['capacity']}"]
+    for row in store.transfers(limit):
+        when = time.strftime("%H:%M:%S", time.localtime(row["ts"]))
+        detail = f" ({row['detail']})" if row.get("detail") else ""
+        lines.append(f"  {when} {row['direction']} {row['message_id']} "
+                     f"peer={row['peer']} {row['result']}{detail}")
+    return "\n".join(lines)
+
+
 def _status(args) -> int:
     try:
-        store = Store(args.db, args.node)
-        info = store.status()
-        transfers = store.transfers(args.transfers)
+        while True:
+            print(_status_text(Store(args.db, args.node), args.transfers), flush=True)
+            if not args.watch:
+                return 0
+            time.sleep(args.interval)
+            print("---")
     except (ProtocolError, ValueError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
-    print(f"node {info['node']}: pending {info['pending']}, "
-          f"delivered {info['delivered']}, capacity {info['capacity']}")
-    for row in transfers:
-        when = time.strftime("%H:%M:%S", time.localtime(row["ts"]))
-        detail = f" ({row['detail']})" if row.get("detail") else ""
-        print(f"  {when} {row['direction']} {row['message_id']} "
-              f"peer={row['peer']} {row['result']}{detail}")
-    return 0
+    except (KeyboardInterrupt, BrokenPipeError):
+        return 0
 
 
 def main(argv=None) -> int:
@@ -73,6 +82,10 @@ def main(argv=None) -> int:
     status = sub.add_parser("status", parents=[common], help="show store state and transfer log")
     status.add_argument("--transfers", type=int, default=10,
                         help="number of recent transfer-log rows (default 10)")
+    status.add_argument("--watch", action="store_true",
+                        help="keep refreshing until Ctrl-C (every --interval seconds)")
+    status.add_argument("--interval", type=float, default=2.0,
+                        help="watch refresh interval in seconds (default 2)")
     status.set_defaults(func=_status)
     args = parser.parse_args(argv)
     return args.func(args)
