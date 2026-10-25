@@ -75,7 +75,7 @@ python3 node.py --id A --db resq-a.db --host 0.0.0.0 --allow-container-bind --po
 python3 lab.py send --db resq-a.db --node A --to B --body "Synthetic test SOS" --priority 2
 ```
 
-To show store-carry-forward, send while the receiver's node is stopped or its Wi-Fi is off: `python3 lab.py status --db resq-a.db --node A` shows the message pending. Reconnect, and the sender retries every 2 seconds until the receiver shows it delivered (`python3 lab.py status --db resq-b.db --node B`). Both laptops need the same `--key`; keep the test on a private network. On Windows, use `python` instead of `python3`.
+To show store-carry-forward, send while the receiver's node is stopped or its Wi-Fi is off: `python3 lab.py status --db resq-a.db --node A` shows the message pending. Reconnect, and the sender retries every 2 seconds until the receiver shows it delivered (`python3 lab.py status --db resq-b.db --node B`; add `--watch` to follow the log live). Both laptops need the same `--key`; keep the test on a private network. On Windows, use `python` instead of `python3`.
 
 ## Comparative benchmark
 
