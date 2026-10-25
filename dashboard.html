@@ -1,15 +1,15 @@
 <!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>ResQNet | Flood rescue relay lab</title>
+<title>ResQNet | offline field-report relay lab</title>
 <link rel="stylesheet" href="/dashboard.css"></head><body>
 <header>
- <div class="brand">RESQ<span>NET</span><small>flood rescue relay lab</small></div>
+ <div class="brand">RESQ<span>NET</span><small>offline field-report relay lab</small></div>
  <div class="tag">SYNTHETIC SCENARIO &middot; NOT A LIVE INCIDENT</div>
 </header>
 <main>
  <section class="panel stage">
   <div class="phead"><h2 id="scen-name"></h2><p id="scen-story"></p></div>
-  <svg id="map" viewBox="0 0 700 420" role="img" aria-label="Rescue relay map"></svg>
+  <svg id="map" viewBox="0 0 700 420" role="img" aria-label="Report relay map"></svg>
   <div class="transport">
    <button id="play" class="ghost">&#9654; PLAY</button>
    <button id="back" class="ghost">|&lt;</button>
@@ -37,7 +37,7 @@
  </section>
  <section class="panel log">
   <h3>EVENT LOG</h3><div id="feed" class="feed mono" aria-live="polite"><div class="row"><span class="t">T+0</span><p>Awaiting run.</p></div></div>
-  <h3>HOW THIS SOLVES IT</h3><p class="note">When floods cut links, phones cannot reach the camp directly. ResQNet stores each message, carries it on any device that moves, and forwards it when a link returns &mdash; store, carry, forward. An online model scores each possible next hop from observed successes, so SOS traffic picks the relay most likely to get through. The same custody protocol also runs between separate OS processes over TCP (<code>node.py</code>, tested on loopback); this map shows the simulator, not field radios. The LIVE LAB panel below shows the real node processes instead, labelled OBSERVED.</p>
+  <h3>HOW THIS SOLVES IT</h3><p class="note">When floods cut links, phones cannot reach the camp directly. ResQNet stores each message, carries it on any device that moves, and forwards it when a link returns &mdash; store, carry, forward. It targets delayed field reports and supply coordination, not urgent rescue: if help is close enough to hear you, shouting beats any protocol, and real offline device-to-device chat already exists elsewhere. An online model scores each possible next hop from observed successes, so queued traffic picks the relay most likely to get through. The same custody protocol also runs between separate OS processes over TCP (<code>node.py</code>, tested on loopback); this map shows the simulator, not field radios. The LIVE LAB panel below shows the real node processes instead, labelled OBSERVED.</p>
  </section>
  <section class="panel live" id="live-lab">
   <h3>LIVE LAB <span class="obs mono">OBSERVED &middot; NOT SIMULATED</span></h3>
@@ -46,6 +46,8 @@
 B=/tmp/resq-b.db
 C=/tmp/resq-c.db</textarea></label>
   <div class="runrow"><button id="lab-observe" class="ghost small">&#10227; OBSERVE NOW</button><label class="mono"><input type="checkbox" id="lab-auto"> AUTO-REFRESH (3s)</label></div>
+  <div class="runrow"><select id="lab-from"></select><span class="mono">&rarr;</span><input id="lab-to" class="mono" placeholder="TO node id" size="10"><input id="lab-body" class="mono" placeholder="synthetic report text" size="28"><select id="lab-pri"><option value="1">MEDICAL</option><option value="2">SOS</option><option value="0">CHECK-IN</option></select><button id="lab-send" class="ghost small">SEND</button></div>
+  <p class="note">SEND queues a synthetic message in the chosen node's own store; its node carries it. RECEIVED below means the destination node got it - never claimed, dispatched or resolved. CLAIM / RESOLVE are operator actions on the node holding the request.</p>
   <div id="lab-out"><p class="note">No observation yet. Start lab nodes (see README), then observe.</p></div>
  </section>
 </main>
