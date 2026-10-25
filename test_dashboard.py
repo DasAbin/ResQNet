@@ -11,7 +11,7 @@ class DashboardTests(unittest.TestCase):
         result = self.client.get('/')
         self.assertEqual(result.status_code, 200)
         self.assertIn('text/html', result.headers['content-type'])
-        for label in ['Flood rescue relay lab', 'RUN SIMULATION', 'WHY THIS HOP?',
+        for label in ['offline field-report relay lab', 'RUN SIMULATION', 'WHY THIS HOP?',
                       'EVENT LOG', 'NOT A LIVE INCIDENT', 'HOW THIS SOLVES IT',
                       'LIVE LAB', 'OBSERVED', '/v1/lab/observe']:
             self.assertIn(label, result.text)
