@@ -47,7 +47,12 @@ class NodeTests(unittest.TestCase):
         cp=self.server(self.c)
         self.assertEqual(flush(restarted,cp),[('m1','delivered')])
         self.assertEqual(self.c.status()['delivered'],1)
-        self.assertEqual(self.c.status()['pending'],0)
+        # Final delivery queues a delivery receipt back to the source.
+        self.assertEqual(self.c.status()['pending'],1)
+        receipt=self.c.pending()[0]
+        self.assertEqual(receipt['id'],'rcpt-m1')
+        self.assertEqual(receipt['destination'],'A')
+        self.assertIn('not claimed',receipt['body'])
 
     def test_idempotent_ack_and_conflicting_id(self):
         m=msg();bp=self.server(self.b)
