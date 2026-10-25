@@ -46,7 +46,7 @@
 B=/tmp/resq-b.db
 C=/tmp/resq-c.db</textarea></label>
   <div class="runrow"><button id="lab-observe" class="ghost small">&#10227; OBSERVE NOW</button><label class="mono"><input type="checkbox" id="lab-auto"> AUTO-REFRESH (3s)</label></div>
-  <div class="runrow"><select id="lab-from"></select><span class="mono">&rarr;</span><input id="lab-to" class="mono" placeholder="TO node id" size="10"><input id="lab-body" class="mono" placeholder="synthetic report text" size="28"><select id="lab-pri"><option value="1">MEDICAL</option><option value="2">SOS</option><option value="0">CHECK-IN</option></select><button id="lab-send" class="ghost small">SEND</button></div>
+  <div class="runrow"><select id="lab-from"></select><span class="mono">&rarr;</span><input id="lab-to" class="mono" placeholder="TO node id" size="10"><input id="lab-body" class="mono" placeholder="e.g. Road blocked at km 4 - need sandbags" size="28"><select id="lab-pri"><option value="1">MEDICAL</option><option value="2">SOS</option><option value="0">CHECK-IN</option></select><button id="lab-send" class="ghost small">SEND</button></div>
   <p class="note">SEND queues a synthetic message in the chosen node's own store; its node carries it. RECEIVED below means the destination node got it - never claimed, dispatched or resolved. CLAIM / RESOLVE are operator actions on the node holding the request.</p>
   <div id="lab-out"><p class="note">No observation yet. Start lab nodes (see README), then observe.</p></div>
  </section>
