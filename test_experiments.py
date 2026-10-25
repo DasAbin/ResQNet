@@ -32,19 +32,38 @@ class HeadlineClaimTests(unittest.TestCase):
     def setUpClass(cls):
         cls.results = evaluate(seeds=8)
 
-    def test_relay_beats_waiting_on_delay_same_messages(self):
-        relay = self.results["supply-run-relay"]["adaptive"]
-        wait = self.results["supply-run-wait"]["adaptive"]
-        self.assertEqual(relay["delivery_ratio"]["mean"], 1.0)
-        self.assertEqual(wait["delivery_ratio"]["mean"], 1.0)
-        self.assertLess(relay["mean_delay_ticks"]["mean"],
-                        wait["mean_delay_ticks"]["mean"])
+    def test_without_relay_custody_nothing_moves(self):
+        # Mule-only topology: refusing intermediate custody means zero delivery.
+        relay = self.results["supply-run-relay"]
+        self.assertEqual(relay["direct_only"]["delivery_ratio"]["mean"], 0.0)
+        self.assertEqual(relay["adaptive"]["delivery_ratio"]["mean"], 1.0)
 
-    def test_snapshot_routing_collapse_under_partition(self):
-        # A routing rule that needs a currently-complete path delivers nothing
-        # on the scheduled-contact topology: custody transfer is the point.
-        self.assertEqual(
-            self.results["supply-run-relay"]["snapshot_shortest"]["delivery_ratio"]["mean"], 0.0)
+    def test_relaying_beats_waiting_on_the_same_contact_trace(self):
+        # Causal pair: identical messages AND identical contact trace (mule
+        # stops plus one late direct contact); only custody policy differs.
+        direct = self.results["supply-run-direct"]
+        self.assertEqual(direct["direct_only"]["delivery_ratio"]["mean"], 1.0)
+        self.assertEqual(direct["epidemic"]["delivery_ratio"]["mean"], 1.0)
+        self.assertLess(direct["epidemic"]["mean_delay_ticks"]["mean"],
+                        direct["direct_only"]["mean_delay_ticks"]["mean"])
+        # The tradeoff is real: relaying costs more transmissions.
+        self.assertGreater(direct["epidemic"]["attempts_per_delivered"]["mean"],
+                           direct["direct_only"]["attempts_per_delivered"]["mean"])
+
+    def test_adaptive_greedy_limitation_is_measured(self):
+        # Documented weakness: adaptive declines relays that are not physically
+        # closer, so on the direct scenario it waits like direct_only.
+        direct = self.results["supply-run-direct"]
+        self.assertEqual(direct["adaptive"]["mean_delay_ticks"]["mean"],
+                         direct["direct_only"]["mean_delay_ticks"]["mean"])
+
+    def test_learning_isolation_no_measured_contribution(self):
+        # adaptive_static scores identically but never learns. On every current
+        # scenario the outcomes match: no ML advantage is claimed anywhere.
+        for scenario in self.results.values():
+            for key in ("delivery_ratio", "mean_delay_ticks", "attempts_per_delivered"):
+                self.assertEqual(scenario["adaptive"][key]["mean"],
+                                 scenario["adaptive_static"][key]["mean"])
 
     def test_epidemic_fastest_but_priciest_on_lossy_mesh(self):
         mesh = self.results["lossy-mesh"]
@@ -52,8 +71,7 @@ class HeadlineClaimTests(unittest.TestCase):
                         mesh["adaptive"]["mean_delay_ticks"]["mean"])
         self.assertGreater(mesh["epidemic"]["attempts_per_delivered"]["mean"],
                            mesh["adaptive"]["attempts_per_delivered"]["mean"])
-        self.assertGreater(mesh["epidemic"]["copies_per_delivered"]["mean"], 0)
-        self.assertEqual(mesh["adaptive"]["copies_per_delivered"]["mean"], 0.0)
+        self.assertEqual(mesh["direct_only"]["delivery_ratio"]["mean"], 0.0)
 
     def test_prophet_cold_start_loses_one_relay_message(self):
         # Documented limitation: no encounter history yet at creation time.
