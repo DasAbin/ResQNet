@@ -103,9 +103,14 @@ def markdown(results: dict, seeds: int) -> str:
     lines.append("- `snapshot_shortest` is a straw man for classic connected-path routing, "
                  "not primary evidence: it needs a currently-complete path, so it stalls "
                  "under scheduled contacts.")
-    lines.append("- `adaptive` is greedy: it declines any relay not physically closer to "
-                 "the destination, so on supply-run-direct it waits exactly like "
-                 "`direct_only` (44.5 ticks). Contact-plan-aware routing is future work.")
+    lines.append("- `adaptive` ranks hops by weighted contact-map distance: a link that "
+                 "has come up costs 1 hop, a plan link never observed up costs N hops, and "
+                 "on a tie a message leaves a route that relies on unobserved links. An "
+                 "earlier version measured progress on the static plan map: the never-used "
+                 "direct edges made relaying look like zero progress, so adaptive waited "
+                 "exactly like `direct_only` (44.5 ticks). The causal scenario exposed "
+                 "that; the encounter-weighted fix above is the result, and the failure "
+                 "is preserved here as history.")
     lines.append("- `adaptive_static` isolates the learned predictor: identical scoring, "
                  "learning updates off. Its outcomes match `adaptive` on every current "
                  "scenario, so no learning advantage is claimed anywhere in this project.")
