@@ -56,11 +56,33 @@ To inject a synthetic message into A's local store, in a fourth shell:
 python3 lab.py send --db /tmp/resq-a.db --node A --to C --body "Synthetic SOS (not a real distress call)" --priority 2
 ```
 
+### Zero-config discovery
+
+`--discover` removes the manual `--peer` step on a shared LAN: each node broadcasts a small HMAC-tagged UDP beacon (same lab key) every `--discover-interval` seconds (default 3) on `--discover-port` (default 9910), learns live peers from beacons, and forgets them after about 10 silent seconds. Wrong-key or tampered beacons are ignored; open-lab (no key) nodes only accept untagged beacons. Discovered peers use the default link priors. Scope honesty: this is LAN broadcast discovery, not internet discovery, and some hotspots/routers block client-to-client broadcast - then fall back to explicit `--peer`.
+
+```bash
+python3 node.py --id A --db /tmp/resq-a.db --host 0.0.0.0 --allow-container-bind \
+    --port 9101 --key class-demo-key --discover
+python3 node.py --id B --db /tmp/resq-b.db --host 0.0.0.0 --allow-container-bind \
+    --port 9102 --key class-demo-key --discover
+python3 lab.py send --db /tmp/resq-a.db --node A --to B --body "Synthetic SOS (not a real distress call)" --priority 2
+```
+
+### Request lifecycle: received, claimed, resolved
+
+A rescue request closes the loop back to its sender, in three distinct states:
+
+1. **received** - automatic: when a request reaches its destination node, that node queues a delivery receipt (`rcpt-<id>`) back to the source through the same store-carry-forward machinery. A receipt means the destination node *received* the request. It does **not** mean a rescuer claimed it, help was dispatched, or anything is resolved.
+2. **claimed** - manual: an operator at a node holding the request runs `python3 lab.py claim --db <db> --node <id> --request <id>`. The claim (`clm-<id>`) travels back to the source. Claim ids are deterministic and immutable, so a second, different claim for the same request is rejected as a conflict - the first claim stands.
+3. **resolved** - manual: `python3 lab.py resolve ...` marks the request done (`res-<id>`) and that travels back too.
+
+The sender watches the loop close with `python3 lab.py track --db <db> --node <id> --request <id>`, which prints each state separately (received / claimed / resolved). System messages never spawn receipts of their own, so the loop cannot recurse. All of this stays inside the trusted-lab scope: synthetic messages, isolated networks, no real distress traffic.
+
 Start A and B, then start C later to demonstrate buffering across an outage. In another shell, inspect it with `python3 lab.py status --db /tmp/resq-c.db --node C`. Each node also records a bounded observed transfer log (every received offer and every attempt, with the score components behind its peer choice) in its store; the dashboard's LIVE LAB panel renders it through `/v1/lab/observe`, so the same flood-rescue story can be watched on real processes instead of the simulator. Run `python3 -m unittest discover -v` to exercise protocol, restart, expiry, malformed input, authentication, wire-encryption, peer-ordering, and custody tests. This prototype has **no per-node identity beyond the shared lab key, no end-to-end or at-rest encryption (custody stores hold plaintext), replay rejection limited to byte-exact frames, no admission quotas, and no disaster-radio transport**. The shared key is lab-grade only: every lab node can decrypt every message, and one leaked key compromises every lab node. Bind only to localhost/private isolated labs, never public interfaces or real users.
 
 ### Two laptops on one network
 
-The same nodes run across two machines that share a network (same Wi-Fi, or a phone hotspot both join). This is ordinary TCP/IP: a real network test, not radio or offline mesh. It has been verified between processes on one machine; a two-physical-device run has not been performed yet.
+The same nodes run across two machines that share a network (same Wi-Fi, or a phone hotspot both join). This is ordinary TCP/IP: a real network test, not radio or offline mesh. It has been verified between processes on one machine; a two-physical-device run has not been performed yet. If both laptops pass `--discover` with the same key and the network allows client broadcast, no manual IP step is needed; the explicit-`--peer` version below works everywhere.
 
 On the receiver laptop, find its LAN address (`ipconfig` on Windows, `ip addr` or `ifconfig` on macOS/Linux; say it is 192.168.1.20), then run:
 
