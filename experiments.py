@@ -18,7 +18,8 @@ from pathlib import Path
 from core import Link, Message, Node, Priority, Simulator
 from scenarios import SCENARIOS
 
-POLICIES = ("adaptive", "snapshot_shortest", "epidemic", "spray_wait", "prophet")
+POLICIES = ("adaptive", "adaptive_static", "snapshot_shortest", "direct_only",
+            "epidemic", "spray_wait", "prophet")
 
 
 def run_once(scenario: dict, policy: str, seed: int) -> dict:
@@ -92,18 +93,43 @@ def markdown(results: dict, seeds: int) -> str:
                  "message needed, including loss-driven retries; copies / delivered counts "
                  "extra replicas a replication policy created (single-copy policies make none).")
     lines.append("")
-    lines.append("## Sensitivity notes (measured, reproducible)")
+    lines.append("## Policy roles and measured limitations")
     lines.append("")
+    lines.append("- `direct_only` is the causal baseline for the relay question: identical "
+                 "messages and contact trace, but intermediate custody is refused. On "
+                 "supply-run-direct it waits for the late direct contacts (44.5 ticks mean) "
+                 "while epidemic/spray-and-wait relay via the vehicle at 32.3. On "
+                 "supply-run-relay (no direct contacts scheduled) it delivers nothing.")
+    lines.append("- `snapshot_shortest` is a straw man for classic connected-path routing, "
+                 "not primary evidence: it needs a currently-complete path, so it stalls "
+                 "under scheduled contacts.")
+    lines.append("- `adaptive` is greedy: it declines any relay not physically closer to "
+                 "the destination, so on supply-run-direct it waits exactly like "
+                 "`direct_only` (44.5 ticks). Contact-plan-aware routing is future work.")
+    lines.append("- `adaptive_static` isolates the learned predictor: identical scoring, "
+                 "learning updates off. Its outcomes match `adaptive` on every current "
+                 "scenario, so no learning advantage is claimed anywhere in this project.")
     lines.append("- Spray-and-wait is budget-sensitive: with L=3 on lossy-mesh every copy "
-                 "strands in its wait phase and delivery drops to 0/6; L=4 restores full "
-                 "delivery. Budget choice is a real deployment parameter, not a detail.")
-    lines.append("- The supply-run pair isolates one variable: identical messages, only the "
-                 "contact schedule differs. Shorten the report TTLs below ~48 ticks and "
-                 "waiting loses messages that relaying still delivers.")
-    lines.append("- PRoPHET's relay-scenario miss is a cold start, not noise: at creation "
-                 "time no node has encounter history for that destination, so the only "
-                 "useful contact is declined. Once history exists it matches epidemic's "
-                 "overhead on a static mesh.")
+                 "strands in its wait phase (0/6); L=4 restores full delivery.")
+    lines.append("- Shorten the supply-run report TTLs below ~48 ticks and waiting/direct "
+                 "policies lose messages that relaying still delivers.")
+    lines.append("- PRoPHET's relay-scenario miss is a cold start: with no encounter "
+                 "history yet it declines the only useful contact. On a static mesh its "
+                 "transitivity floods predictability everywhere, so it matches epidemic's "
+                 "overhead instead of beating it.")
+    lines.append("")
+    lines.append("## Protocol fidelity simplifications")
+    lines.append("")
+    lines.append("- PRoPHET implements the core update equations (P_init=0.75 on encounter, "
+                 "aging gamma=0.98 per tick, transitivity beta=0.25), simplified: every "
+                 "tick a link is up counts as a fresh encounter, predictability tables are "
+                 "read directly rather than exchanged as summary vectors, and forwarding "
+                 "compares per-destination predictability only.")
+    lines.append("- Spray-and-wait is binary mode only; simultaneous same-tick contacts "
+                 "resolve sequentially in deterministic order.")
+    lines.append("- All replication policies purge delivered copies instantly and globally; "
+                 "real epidemic/spray keep copies until TTL. This only affects buffer "
+                 "pressure, not the delivery, delay or attempt metrics reported here.")
     lines.append("")
     return "\n".join(lines)
 
