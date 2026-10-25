@@ -1,6 +1,12 @@
 "use strict";
 // Illustrative flood-rescue scenarios. All people, places and events are synthetic.
 const PRESETS=[
+{id:"supply-run",name:"Scheduled supply run",story:"No internet anywhere. A supply vehicle already drives its normal round: base, north shelter, south shelter, back to base. Field reports and the supply manifest ride along - nobody travels just to carry a message. Compare with WAITING for one rare direct contact in EXPERIMENTS.md: relaying cut mean delay from 44.5 to 32.3 ticks over 24 seeds.",
+ nodes:[{id:"BASE",role:"relief base",x:80,y:210},{id:"MULE",role:"supply vehicle",x:290,y:210},{id:"SHELTER-N",role:"north shelter",x:520,y:80},{id:"SHELTER-S",role:"south shelter",x:520,y:340}],
+ links:[{a:"MULE",b:"BASE",active:false,loss:0.2,reliability:0.9,latency_ms:30,bandwidth_bytes_per_tick:300,why:"in range only while loading"},{a:"MULE",b:"SHELTER-N",active:false,loss:0.2,reliability:0.9,latency_ms:30,bandwidth_bytes_per_tick:300,why:"in range only at the north stop"},{a:"MULE",b:"SHELTER-S",active:false,loss:0.2,reliability:0.9,latency_ms:30,bandwidth_bytes_per_tick:300,why:"in range only at the south stop"}],
+ messages:[{id:"rpt-north-road",source:"SHELTER-N",destination:"BASE",priority:1,created:2,ttl:55,size_bytes:120,label:"Report: road blocked at km 4"},{id:"rpt-south-water",source:"SHELTER-S",destination:"BASE",priority:1,created:3,ttl:55,size_bytes:120,label:"Report: water for 40, 2 days left"},{id:"supplies-manifest",source:"BASE",destination:"SHELTER-N",priority:1,created:2,ttl:55,size_bytes:200,label:"Supply manifest for north shelter"},{id:"rpt-north-count",source:"SHELTER-N",destination:"BASE",priority:0,created:18,ttl:55,label:"Report: headcount 40, all safe"}],
+ changes:[{tick:1,a:"MULE",b:"BASE",active:true},{tick:11,a:"MULE",b:"BASE",active:false},{tick:15,a:"MULE",b:"SHELTER-N",active:true},{tick:26,a:"MULE",b:"SHELTER-N",active:false},{tick:30,a:"MULE",b:"SHELTER-S",active:true},{tick:41,a:"MULE",b:"SHELTER-S",active:false},{tick:45,a:"MULE",b:"BASE",active:true},{tick:56,a:"MULE",b:"BASE",active:false}],ticks:60,seed:11},
+
 {id:"footbridge",name:"Footbridge out",story:"One stranded resident, one volunteer on a bike, relief camp across the river. The footbridge link starts down.",
  nodes:[{id:"MAYA",role:"resident",x:90,y:210},{id:"DEV",role:"volunteer",x:350,y:210},{id:"CAMP",role:"relief camp",x:610,y:210}],
  links:[{a:"MAYA",b:"DEV"},{a:"DEV",b:"CAMP",active:false,why:"footbridge flooded"}],
