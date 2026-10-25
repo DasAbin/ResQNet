@@ -15,7 +15,7 @@ python3 -m unittest discover -v
 python3 example.py
 ```
 
-`example.py` takes A-B-C, disconnects B-C for one tick, sends an SOS from A to C, then restores B-C. The output contains a forwarding trace and run metrics. Links are bidirectional; transfer is custody-based and one hop per tick. See [ARCHITECTURE.md](ARCHITECTURE.md) for design, limitations and roadmap.
+`example.py` takes A-B-C, disconnects B-C for one tick, sends a high-priority report from A to C, then restores B-C. The output contains a forwarding trace and run metrics. Links are bidirectional; transfer is custody-based and one hop per tick. See [ARCHITECTURE.md](ARCHITECTURE.md) for design, limitations and roadmap.
 
 ## Protocol evaluation
 
@@ -73,7 +73,7 @@ python3 node.py --id C --db /tmp/resq-c.db --port 9103
 To inject a synthetic message into A's local store, in a fourth shell:
 
 ```bash
-python3 lab.py send --db /tmp/resq-a.db --node A --to C --body "Synthetic SOS (not a real distress call)" --priority 2
+python3 lab.py send --db /tmp/resq-a.db --node A --to C --body "Synthetic field report (not a real distress call)" --priority 2
 ```
 
 ### Zero-config discovery
@@ -85,7 +85,7 @@ python3 node.py --id A --db /tmp/resq-a.db --host 0.0.0.0 --allow-container-bind
     --port 9101 --key class-demo-key --discover
 python3 node.py --id B --db /tmp/resq-b.db --host 0.0.0.0 --allow-container-bind \
     --port 9102 --key class-demo-key --discover
-python3 lab.py send --db /tmp/resq-a.db --node A --to B --body "Synthetic SOS (not a real distress call)" --priority 2
+python3 lab.py send --db /tmp/resq-a.db --node A --to B --body "Synthetic field report (not a real distress call)" --priority 2
 ```
 
 ### Request lifecycle: received, claimed, resolved
@@ -114,7 +114,7 @@ Allow the firewall prompt. On the sender laptop:
 
 ```bash
 python3 node.py --id A --db resq-a.db --host 0.0.0.0 --allow-container-bind --port 9201 --peer 192.168.1.20:9202 --key class-demo-key
-python3 lab.py send --db resq-a.db --node A --to B --body "Synthetic test SOS" --priority 2
+python3 lab.py send --db resq-a.db --node A --to B --body "Synthetic test report" --priority 2
 ```
 
 To show store-carry-forward, send while the receiver's node is stopped or its Wi-Fi is off: `python3 lab.py status --db resq-a.db --node A` shows the message pending. Reconnect, and the sender retries every 2 seconds until the receiver shows it delivered (`python3 lab.py status --db resq-b.db --node B`; add `--watch` to follow the log live). Both laptops need the same `--key`; keep the test on a private network. On Windows, use `python` instead of `python3`.
