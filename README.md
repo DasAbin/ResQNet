@@ -19,20 +19,21 @@ python3 example.py
 
 ## Protocol evaluation
 
-Five forwarding policies run in the same tick-accurate simulator: `adaptive` (single-copy, learned link-success scoring), `snapshot_shortest` (classic currently-complete-path routing, included as the straw man), `epidemic` (unbounded replication), `spray_wait` (binary ticket spraying, L=4), and `prophet` (encounter-history predictability with aging and transitivity).
+Seven forwarding policies run in the same tick-accurate simulator: `adaptive` (single-copy, learned link-success scoring), `adaptive_static` (identical scoring, learning off - the isolation control), `direct_only` (no intermediate custody - the causal baseline for "is relaying worth it?"), `snapshot_shortest` (classic currently-complete-path routing, a straw man), `epidemic` (unbounded replication), `spray_wait` (binary ticket spraying, L=4), and `prophet` (encounter-history predictability with aging and transitivity).
 
 ```bash
 python3 experiments.py            # prints the table; --seeds N --md EXPERIMENTS.md
 ```
 
-Fixed seeds make the run reproducible. Headline results over 24 seeds (full table in [EXPERIMENTS.md](EXPERIMENTS.md)):
+Fixed seeds make the run reproducible. Headline results over 24 seeds (full table and limitations in [EXPERIMENTS.md](EXPERIMENTS.md)):
 
-- On the scheduled supply-run scenario, relaying via the vehicle's normal round delivers 4/4 at mean delay 32.3 ticks; waiting for one rare direct contact delivers the same messages at 44.5 ticks (38% slower, identical message load). With perishable TTLs (< 48 ticks) waiting loses reports entirely.
-- `snapshot_shortest` delivers 0/4 on that topology: a routing rule that needs a currently-complete path collapses under scheduled contacts. Custody transfer is the point of the project.
-- On a lossy static mesh, epidemic is fastest (delay 2.9 vs adaptive 3.2 ticks) but costs 85% more transmissions per delivered message (7.7 vs 4.2); spray-and-wait with L=4 sits between. PRoPHET matches epidemic's overhead here because transitivity floods a static mesh.
+- Causal relay comparison, identical messages AND identical contact trace (supply-run-direct: the vehicle's normal stops plus one late direct contact per shelter): `direct_only` waits for the direct contacts and delivers at mean delay 44.5 ticks; `epidemic` and `spray_wait` relay via the vehicle and deliver the same messages at 32.3 ticks (27% earlier), at the cost of more transmissions (3.5 vs 1.4 attempts per delivered). On the mule-only variant, `direct_only` delivers nothing at all.
+- Measured limitation of the project's own adaptive policy: it is greedy and declines relays that are not physically closer to the destination, so on supply-run-direct it waits exactly like `direct_only`. Contact-plan-aware routing is future work, not claimed.
+- No learning advantage is claimed: `adaptive_static` (same scoring, learning disabled) matches `adaptive` on every current scenario.
+- On a lossy static mesh, epidemic is fastest (delay 2.9 vs adaptive 3.2 ticks) but costs 85% more transmissions per delivered message (7.7 vs 4.2); spray-and-wait with L=4 sits between.
 - Documented weakness: PRoPHET's cold start loses one message on the supply run (0.75 delivery) - with no encounter history yet, it declines the only contact that would have carried it.
 
-The dashboard's "compare all forwarding policies" view runs the same five policies live on any preset and explains each adaptive hop; the table above is the multi-seed evidence behind it.
+The dashboard's "compare all forwarding policies" view runs every policy live on any preset and explains each adaptive hop; the table above is the multi-seed evidence behind it.
 
 ## Next milestones
 
@@ -55,9 +56,9 @@ python3 -m venv .venv
 
 The interactive local API docs are at `http://127.0.0.1:8000/docs`. Send a JSON scenario to `POST /v1/simulations`: `nodes`, `links`, `messages`, optional `changes`, `policy` (`adaptive` or `snapshot_shortest`), `ticks`, and `seed`. The response has events (including per-hop `decision` explanations with score components), buffers, and metrics including predictor state. Request sizes and computational work are bounded. The API has no authentication or abuse controls and must **not** be exposed on a public network. `httpx` is a test-only dependency for FastAPI's TestClient.
 
-## Dashboard (flood rescue relay lab)
+## Dashboard (offline field-report relay lab)
 
-Open `http://127.0.0.1:8000/` after starting the API. The dependency-free dashboard illustrates the intended use: during a flood, a stranded resident's phone cannot reach the relief camp, so messages are stored, carried on nearby devices, and forwarded when a link returns. Pick a synthetic preset (footbridge outage, two routes to camp, flapping causeway), edit messages and link outage ticks, then run and scrub the timeline. Packets, metrics, the event log, per-hop "why this hop" score breakdowns, the estimator's learned weights, and an optional adaptive-vs-baseline comparison all come from real `/v1/simulations` responses, not canned values. A separate LIVE LAB panel, labelled OBSERVED, reads the actual lab nodes below: it shows each node's pending/delivered counts, buffered message summaries and its real transfer log (including the EMA basis behind each peer attempt), via `POST /v1/lab/observe`. Unreadable stores are shown as unavailable; nothing in that panel is simulated or filled in. It can only see stores on the same machine as the API, it answers loopback clients only, and store paths are confined to a lab root (`RESQNET_LAB_ROOTS`, default `/tmp`) with the file verified to be a real node store before anything is read. All people, places and events are synthetic illustrations; this is a local web UI, not a deployed cloud service or a field-tested rescue system.
+Open `http://127.0.0.1:8000/` after starting the API. The dependency-free dashboard illustrates the intended use: during a flood, links between shelters, the relief camp and the outside drop, so delayed field reports and supply updates are stored, carried on nearby devices, and forwarded when a link returns. Pick a synthetic preset (footbridge outage, two routes to camp, flapping causeway), edit messages and link outage ticks, then run and scrub the timeline. Packets, metrics, the event log, per-hop "why this hop" score breakdowns, the estimator's learned weights, and an optional adaptive-vs-baseline comparison all come from real `/v1/simulations` responses, not canned values. A separate LIVE LAB panel, labelled OBSERVED, reads the actual lab nodes below: it shows each node's pending/delivered counts, buffered message summaries and its real transfer log (including the EMA basis behind each peer attempt), via `POST /v1/lab/observe`. Unreadable stores are shown as unavailable; nothing in that panel is simulated or filled in. It can only see stores on the same machine as the API, it answers loopback clients only, and store paths are confined to a lab root (`RESQNET_LAB_ROOTS`, default `/tmp`) with the file verified to be a real node store before anything is read. All people, places and events are synthetic illustrations; this is a local web UI, not a deployed cloud service or a field-tested rescue system.
 
 ## Experimental socket nodes
 
