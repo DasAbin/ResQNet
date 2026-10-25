@@ -113,18 +113,34 @@ function labRow(e){const when=new Date(e.ts*1000).toLocaleTimeString();
  return `<div class="trow"><span class="t">${when}</span><span>${dir} ${esc(e.peer)}</span><span class="mono">${esc(e.message_id)}</span><span class="res ${esc(e.result)}">${esc(e.result).toUpperCase()}</span>${basis}</div>`}
 function renderLab(d){const out=$("#lab-out");
  const SYS=["rcpt-","clm-","res-"],isSys=id=>SYS.some(p=>id.startsWith(p));
+ const sysKind=id=>id.startsWith("rcpt-")?"RECEIPT":id.startsWith("clm-")?"CLAIM notice":"RESOLVED notice";
+ const sysReq=id=>id.slice(id.indexOf("-")+1);
+ // Index every real request seen anywhere, so system messages and the sender
+ // tracker can show the original words instead of opaque ids.
+ const reqs={};d.nodes.forEach(n=>{if(!n.ok)return;
+  (n.pending||[]).concat(n.delivered_recent||[]).forEach(m=>{if(!isSys(m.id)&&!reqs[m.id])reqs[m.id]=m})});
  const everywhere=new Set();d.nodes.forEach(n=>{if(n.ok)(n.delivered_recent||[]).forEach(m=>everywhere.add(m.id))});
  const life=id=>({received:everywhere.has("rcpt-"+id),claimed:everywhere.has("clm-"+id),resolved:everywhere.has("res-"+id)});
  const chips=id=>{const l=life(id);return [l.received&&"RECEIVED",l.claimed&&"CLAIMED",l.resolved&&"RESOLVED"].filter(Boolean).map(c=>`<span class="res delivered">${c}</span>`).join(" ")};
+ const tracker=n=>{const mine=Object.values(reqs).filter(m=>m.source===n.id);
+  if(!mine.length)return"";
+  return `<h5>REQUESTS SENT FROM HERE</h5><table class="mono">`+mine.map(m=>{const l=life(m.id);
+   const status=l.resolved?"RESOLVED":l.claimed?"CLAIMED":l.received?"RECEIVED":"IN TRANSIT";
+   return `<tr><td>&ldquo;${esc(m.body_preview)}&rdquo;</td><td>&rarr; ${esc(m.destination)}</td><td>${chips(m.id)||`<span class="res">${status}</span>`}</td></tr>`}).join("")+`</table>`};
  out.innerHTML=`<p class="note">Observed at ${new Date(d.observed_at*1000).toLocaleTimeString()} &mdash; ${esc(d.warning)}</p>`+
   d.nodes.map(n=>{if(!n.ok)return `<div class="lcard bad"><h4>${esc(n.id)} <span class="mono">${esc(n.db)}</span></h4><p class="note">UNAVAILABLE: ${esc(n.error)}</p></div>`;
-   const pend=n.pending.map(m=>`<tr><td>${esc(m.id)}</td><td>${esc(m.source)}&rarr;${esc(m.destination)}</td><td>${PN[m.priority]||m.priority}</td><td>${esc(m.body_preview)}</td></tr>`).join("");
+   const pend=n.pending.map(m=>{const sys=isSys(m.id);const r=sys?reqs[sysReq(m.id)]:null;
+    return sys?`<tr><td>${sysKind(m.id)}</td><td colspan="3">${r?`&ldquo;${esc(r.body_preview)}&rdquo; (${esc(r.source)}&rarr;${esc(r.destination)})`:esc(m.body_preview)}</td></tr>`
+              :`<tr><td>${esc(m.id)}</td><td>${esc(m.source)}&rarr;${esc(m.destination)}</td><td>${PN[m.priority]||m.priority}</td><td>${esc(m.body_preview)}</td></tr>`}).join("");
    const del=n.delivered_recent.map(m=>{const sys=isSys(m.id);const l=sys?null:life(m.id);
     const acts=sys?"":` <button class="ghost small" data-act="claim" data-node="${esc(n.id)}" data-db="${esc(n.db)}" data-req="${esc(m.id)}" ${l.claimed?"disabled":""}>CLAIM</button> <button class="ghost small" data-act="resolve" data-node="${esc(n.id)}" data-db="${esc(n.db)}" data-req="${esc(m.id)}" ${l.resolved?"disabled":""}>RESOLVE</button>`;
-    return `<tr><td>${esc(m.id)}</td><td>${esc(m.source)}&rarr;${esc(m.destination)}</td><td>${new Date(m.delivered_at*1000).toLocaleTimeString()}</td><td>${sys?"":chips(m.id)}${acts}</td></tr>`}).join("");
+    if(sys){const r=reqs[sysReq(m.id)];
+     return `<tr><td>${sysKind(m.id)}</td><td colspan="2">${r?`&ldquo;${esc(r.body_preview)}&rdquo; (${esc(r.source)}&rarr;${esc(r.destination)})`:esc(m.id)}</td><td>${new Date(m.delivered_at*1000).toLocaleTimeString()}</td></tr>`}
+    return `<tr><td>${esc(m.id)}</td><td>${esc(m.source)}&rarr;${esc(m.destination)}</td><td>${new Date(m.delivered_at*1000).toLocaleTimeString()}</td><td>${chips(m.id)}${acts}</td></tr>`}).join("");
    const trs=n.transfers.map(labRow).join("");
    return `<div class="lcard"><h4>${esc(n.id)} <span class="mono">${esc(n.db)}</span></h4>
     <div class="counts mono"><span>PENDING <b>${n.pending_count}</b></span><span>DELIVERED <b>${n.delivered_count}</b></span></div>
+    ${tracker(n)}
     ${pend?`<h5>CARRYING NOW</h5><table class="mono">${pend}</table>`:""}
     ${del?`<h5>ARRIVED HERE</h5><table class="mono">${del}</table>`:""}
     ${trs?`<h5>TRANSFER LOG (newest first)</h5><div class="tlog">${trs}</div>`:""}
@@ -140,8 +156,11 @@ function boot(){const sel=$("#preset");sel.innerHTML=PRESETS.map((p,i)=>`<option
  $("#run").onclick=run;$("#play").onclick=play;$("#back").onclick=()=>{stop();if(runs.adaptive&&tick>0)go(tick-1)};
  $("#lab-observe").onclick=labObserve;
  $("#lab-send").onclick=labSend;
- $("#lab-nodes").addEventListener("input",()=>{const ns=labNodes(),sel=$("#lab-from");sel.innerHTML=ns.map(n=>`<option>${esc(n.id)}</option>`).join("")});
- $("#lab-from").innerHTML=labNodes().map(n=>`<option>${esc(n.id)}</option>`).join("");
+ const syncLabForm=()=>{const ns=labNodes(),sel=$("#lab-from");sel.innerHTML=ns.map(n=>`<option>${esc(n.id)}</option>`).join("");
+  const other=ns.find(n=>n.id!==sel.value);if(other&&!$("#lab-to").value)$("#lab-to").value=other.id};
+ $("#lab-nodes").addEventListener("input",syncLabForm);
+ $("#lab-from").addEventListener("change",()=>{const other=labNodes().find(n=>n.id!==$("#lab-from").value);if(other)$("#lab-to").value=other.id});
+ syncLabForm();
  document.body.addEventListener("click",e=>{if(e.target.dataset.act)labAct(e.target)});
  $("#lab-auto").onchange=e=>{clearInterval(labTimer);labTimer=e.target.checked?setInterval(labObserve,3000):null;if(labTimer)labObserve()};
  labObserve();  // show current node state on load; unavailable stores say so
