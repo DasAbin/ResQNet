@@ -1,3 +1,5 @@
+import os
+import tempfile
 import unittest
 from fastapi.testclient import TestClient
 from api import app, MAX_TICKS
@@ -161,3 +163,32 @@ class ApiTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class LabControlTests(unittest.TestCase):
+    def setUp(self):
+        os.environ["RESQNET_LAB_ROOTS"] = "/tmp"
+        self.dir = tempfile.mkdtemp(dir="/tmp")
+        self.db = os.path.join(self.dir, "a.db")
+
+    def test_send_claim_resolve_roundtrip(self):
+        sent = client.post("/v1/lab/send", json={"id": "A", "db": self.db, "to": "B",
+                                                 "body": "synthetic report", "priority": 1})
+        self.assertEqual(sent.status_code, 200)
+        mid = sent.json()["id"]
+        self.assertEqual(sent.json()["result"], "stored")
+        claim = client.post("/v1/lab/claim", json={"id": "A", "db": self.db, "request": mid})
+        self.assertEqual(claim.status_code, 200)
+        self.assertTrue(claim.json()["id"].startswith("clm-"))
+        resolve = client.post("/v1/lab/resolve", json={"id": "A", "db": self.db, "request": mid})
+        self.assertTrue(resolve.json()["id"].startswith("res-"))
+
+    def test_claim_missing_request_404(self):
+        missing = client.post("/v1/lab/claim", json={"id": "A", "db": self.db,
+                                                     "request": "no-such-id"})
+        self.assertEqual(missing.status_code, 404)
+
+    def test_store_path_confined(self):
+        bad = client.post("/v1/lab/send", json={"id": "A", "db": "/etc/passwd",
+                                                "to": "B", "body": "x"})
+        self.assertEqual(bad.status_code, 422)
