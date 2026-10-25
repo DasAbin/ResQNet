@@ -12,13 +12,15 @@ The model currently uses custody transfer (single copy) and per-node seen IDs. T
 
 ## Module boundaries
 
-- `core.py`: data contracts, deterministic simulator, adaptive and snapshot-shortest forwarding policies, link-success estimator, per-hop decision explanations; standard library only.
+- `core.py`: data contracts, deterministic simulator, five forwarding policies (adaptive, snapshot-shortest, epidemic, spray-and-wait, PRoPHET) including replication custody semantics, link-success estimator, per-hop decision explanations; standard library only.
 - `api.py`: local FastAPI service; validated `POST /v1/simulations` (scenario + `policy`) returning events, buffers, metrics with predictor state; serves the dashboard assets on loopback.
-- `dashboard.html` + `dashboard.css` + `dashboard-data.js` + `dashboard-render.js` + `dashboard-app.js`: dependency-free dashboard. Flood-rescue presets (all synthetic people/places), message and outage editors, timeline playback reconstructed from API events, per-hop "why" inspector, policy A/B comparison, estimator panel.
+- `dashboard.html` + `dashboard.css` + `dashboard-data.js` + `dashboard-render.js` + `dashboard-app.js`: dependency-free dashboard. Flood-rescue presets (all synthetic people/places), message and outage editors, timeline playback reconstructed from API events, per-hop "why" inspector, five-policy live comparison table, estimator panel.
 - `node.py`: separate trusted-lab TCP custody-transfer prototype between OS processes, with bounded payloads, SQLite persistence and receipts, optional shared-key HMAC authentication plus encrypted bodies on the wire (`--key` / `RESQNET_LAB_KEY`), zero-config LAN peer discovery via HMAC-tagged UDP broadcast beacons (`--discover`), a rescue-request lifecycle (automatic delivery receipts `rcpt-` on destination arrival; operator `clm-`/`res-` claim and resolution messages that travel back through the same custody machinery, with deterministic ids so a conflicting second claim is rejected), and per-message peer choice through the simulator's own `DeliveryPredictor`/`score_hop` over configured priors plus observed round trips, outcomes and peer load.
+- `scenarios.py`: evaluation scenarios with explicit contact schedules (a supply vehicle's normal round vs waiting for a rare direct contact; a lossy static mesh).
+- `experiments.py`: seeded protocol-evaluation harness; prints and writes EXPERIMENTS.md (means +/- stddev over fixed seeds).
 - `lab.py`: small send/status/claim/resolve/track CLI over the node store, so live demos and the request lifecycle do not need inline Python; stdlib only.
 - `benchmark.py`: paired adaptive-vs-baseline comparison on held-out seeds; results in BENCHMARK.md.
-- `test_*.py`: unit, API, benchmark, Compose-static and loopback process tests (75 tests).
+- `test_*.py`: unit, API, benchmark, Compose-static and loopback process tests (91 tests).
 
 ## Boundaries and evaluation
 
