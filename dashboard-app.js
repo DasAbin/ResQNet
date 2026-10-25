@@ -2,7 +2,7 @@
 const $=q=>document.querySelector(q),NS="http://www.w3.org/2000/svg";
 const esc=s=>String(s).replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 let cur,messages,changes,runs={},tick=0,timer=null,selDecision=null;
-const PC={2:"sos",1:"med",0:"ok"},PN={2:"SOS",1:"MEDICAL",0:"CHECK-IN"};
+const PC={2:"sos",1:"med",0:"ok"},PN={2:"HIGH",1:"REPORT",0:"CHECK-IN"};
 function el(n,a){const e=document.createElementNS(NS,n);for(const k in a)e.setAttribute(k,a[k]);return e}
 function nodePos(id){const n=cur.nodes.find(n=>n.id===id);return n?[n.x,n.y]:[0,0]}
 function lkey(a,b){return[a,b].sort().join("|")}
