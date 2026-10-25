@@ -240,6 +240,16 @@ class Store:
                             "destination": message["destination"], "delivered_at": row["delivered_at"]})
             return out
 
+    def get(self, message_id: str) -> dict | None:
+        """Full stored payload for one id, from pending or delivered."""
+        with self.lock, closing(self._db()) as db:
+            for table in ("pending", "delivered"):
+                row = db.execute(f"SELECT payload FROM {table} WHERE id=?",
+                                 (message_id,)).fetchone()
+                if row:
+                    return json.loads(row["payload"])
+        return None
+
     def pending(self) -> list[dict]:
         with self.lock, closing(self._db()) as db, db:
             db.execute("DELETE FROM pending WHERE expires_at<=?", (time.time(),))
@@ -302,6 +312,11 @@ class Handler(socketserver.BaseRequestHandler):
             elif body.startswith(ENC_PREFIX):
                 raise ProtocolError("encrypted offer but no key")
             outcome = self.server.store.receive(message,sender=frame["sender"])
+            if outcome == "delivered":
+                receipt = make_receipt(message, self.server.store.id)
+                if receipt is not None:
+                    # Silent bookkeeping: not an observed custody event.
+                    self.server.store._receive(receipt)
             reply = {"id": frame["message"].get("id"), "result": outcome}
             if key is not None:
                 reply["tag"] = _tag(key, reply)
@@ -311,6 +326,72 @@ class Handler(socketserver.BaseRequestHandler):
                 self.request.sendall(_frame({"error": str(exc)[:128]}))
             except OSError:
                 pass
+
+
+RECEIPT_PREFIX = "rcpt-"
+CLAIM_PREFIX = "clm-"
+RESOLVE_PREFIX = "res-"
+SYSTEM_PREFIXES = (RECEIPT_PREFIX, CLAIM_PREFIX, RESOLVE_PREFIX)
+
+
+def _system_message(prefix: str, request: dict, actor: str, body: str) -> dict | None:
+    """Lifecycle system message about a rescue request.
+
+    These are ordinary buffered messages with deterministic ids, so dedup,
+    expiry, capacity and encryption all apply unchanged. A deterministic id
+    means a second, different claim for the same request is rejected as a
+    conflict: the first claim stands, which prevents double-claim confusion.
+    """
+    try:
+        orig = request["id"]
+        if not isinstance(orig, str) or not orig or orig.startswith(SYSTEM_PREFIXES):
+            return None
+        return {"id": prefix + orig[:120],
+                "source": actor,
+                "destination": request["source"],
+                "body": body,
+                "priority": request["priority"],
+                "expires_at": request["expires_at"]}
+    except (KeyError, TypeError):
+        return None
+
+
+def make_receipt(message: dict, receiver_id: str) -> dict | None:
+    """Delivery receipt: the destination node RECEIVED this message.
+
+    A receipt is not a rescuer claim, dispatch or resolution. It only records
+    that the request arrived at the destination node's store, and travels back
+    as an ordinary buffered message through the same custody machinery.
+    """
+    orig = message.get("id")
+    return _system_message(RECEIPT_PREFIX, message, receiver_id,
+                           f"delivery receipt: {str(orig)[:80]} received by node "
+                           f"{receiver_id} (arrived, not claimed)") if isinstance(orig, str) else None
+
+
+def make_claim(request: dict, claimer: str) -> dict | None:
+    """Claim: an operator at a node takes responsibility for a request.
+
+    Manual action, distinct from automatic delivery receipts. A claim says
+    someone accepted the request; it does not say help arrived or the
+    situation is resolved.
+    """
+    orig = request.get("id")
+    return _system_message(CLAIM_PREFIX, request, claimer,
+                           f"claim: request {str(orig)[:80]} claimed by node "
+                           f"{claimer} (accepted, not yet resolved)") if isinstance(orig, str) else None
+
+
+def make_resolve(request: dict, resolver: str) -> dict | None:
+    """Resolve: an operator marks a request handled.
+
+    Manual action. Resolution means the claiming side considers the request
+    done; it is the final lifecycle state after received and claimed.
+    """
+    orig = request.get("id")
+    return _system_message(RESOLVE_PREFIX, request, resolver,
+                           f"resolved: request {str(orig)[:80]} resolved by node "
+                           f"{resolver}") if isinstance(orig, str) else None
 
 
 class Server(socketserver.ThreadingTCPServer):
@@ -427,6 +508,105 @@ def parse_peer(spec: str) -> Peer:
         raise ValueError(f"invalid peer {spec!r}: {exc}") from exc
 
 
+BEACON_TYPE = "resqnet-beacon"
+BEACON_TTL = 10.0  # seconds a heard peer stays eligible
+
+
+def make_beacon(node_id: str, port: int, key=None) -> bytes:
+    body = {"type": BEACON_TYPE, "id": node_id, "port": port}
+    kb = _key_bytes(key)
+    if kb is not None:
+        body["tag"] = hmac.new(kb, f"{node_id}|{port}".encode("utf-8"),
+                               hashlib.sha256).hexdigest()
+    return json.dumps(body, separators=(",", ":")).encode("utf-8")
+
+
+def read_beacon(data: bytes, key=None):
+    """Parse and authenticate a discovery beacon; None when invalid or foreign.
+
+    Open-lab nodes accept only untagged beacons; keyed nodes only correctly
+    tagged ones, so two labs sharing a LAN never mix.
+    """
+    try:
+        body = json.loads(data.decode("utf-8"))
+    except (ValueError, UnicodeDecodeError):
+        return None
+    if not isinstance(body, dict) or body.get("type") != BEACON_TYPE:
+        return None
+    node_id, port, tag = body.get("id"), body.get("port"), body.get("tag")
+    if not isinstance(node_id, str) or not node_id or len(node_id) > 64:
+        return None
+    if type(port) is not int or not 0 < port <= 65535:
+        return None
+    kb = _key_bytes(key)
+    if kb is None:
+        return (node_id, port) if tag is None else None
+    if not isinstance(tag, str):
+        return None
+    expected = hmac.new(kb, f"{node_id}|{port}".encode("utf-8"),
+                        hashlib.sha256).hexdigest()
+    return (node_id, port) if hmac.compare_digest(tag, expected) else None
+
+
+class Discovery:
+    """UDP broadcast beacons so lab nodes find each other without --peer flags.
+
+    Same trust boundary as the wire protocol: with --key every beacon carries
+    an HMAC-SHA256 tag and foreign beacons are ignored. Discovery only learns
+    candidate TCP addresses; custody transfer still runs the normal
+    authenticated offer/ACK path, so a spoofed beacon cannot inject messages.
+    """
+
+    def __init__(self, node_id, tcp_port, key=None, beacon_port=9910,
+                 broadcast="255.255.255.255", interval=3.0, emit=print):
+        self.id, self.port, self.key = node_id, tcp_port, key
+        self.beacon_port, self.broadcast, self.interval = beacon_port, broadcast, interval
+        self.emit = emit
+        self.fresh: dict[tuple[str, int], float] = {}
+        self._announced: set[tuple[str, int]] = set()
+
+    def start(self):
+        threading.Thread(target=self._send_loop, daemon=True).start()
+        threading.Thread(target=self._listen_loop, daemon=True).start()
+
+    def _send_loop(self):
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+            packet = make_beacon(self.id, self.port, self.key)
+            while True:
+                try:
+                    sock.sendto(packet, (self.broadcast, self.beacon_port))
+                except OSError:
+                    pass  # interface down (outage demo); retry next interval
+                time.sleep(self.interval)
+
+    def _listen_loop(self):
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            try:
+                sock.bind(("", self.beacon_port))
+            except OSError:
+                return
+            while True:
+                try:
+                    data, addr = sock.recvfrom(2048)
+                except OSError:
+                    return
+                heard = read_beacon(data, self.key)
+                if not heard or heard[0] == self.id:
+                    continue
+                peer = (addr[0], heard[1])
+                self.fresh[peer] = time.time()
+                if peer not in self._announced:
+                    self._announced.add(peer)
+                    self.emit(json.dumps({"discovered": heard[0],
+                                          "at": f"{peer[0]}:{peer[1]}"}), flush=True)
+
+    def live_peers(self, now=None):
+        now = time.time() if now is None else now
+        return [peer for peer, seen in self.fresh.items() if now - seen < BEACON_TTL]
+
+
 def flush_peers(store: Store, peers: list, predictor: DeliveryPredictor, key=None) -> list[tuple]:
     """Offer buffered messages using the simulator's own adaptive scoring.
 
@@ -505,6 +685,10 @@ def main() -> None:
                         help="Permit wildcard bind only inside isolated, unpublished container network")
     parser.add_argument("--key", default=os.environ.get("RESQNET_LAB_KEY"),
                         help="Shared lab HMAC key (or RESQNET_LAB_KEY); omit for unauthenticated open-lab mode")
+    parser.add_argument("--discover", action="store_true",
+                        help="Broadcast beacons and auto-peer with discovered lab nodes")
+    parser.add_argument("--discover-port", type=int, default=9910)
+    parser.add_argument("--discover-interval", type=float, default=3.0)
     args = parser.parse_args()
     if args.port <= 0 or args.port > 65535 or args.interval < .1:
         parser.error("invalid port or interval")
@@ -521,9 +705,22 @@ def main() -> None:
     thread.start()
     print(json.dumps({"listening": server.server_address, "id": args.id,
                       "wire": "hmac-sha256-tag+encrypted-body" if args.key else "open-lab-plaintext"}), flush=True)
+    discovery = None
+    if args.discover:
+        if not 0 < args.discover_port <= 65535 or args.discover_interval < .1:
+            parser.error("invalid discover port or interval")
+        discovery = Discovery(args.id, args.port, key=args.key,
+                              beacon_port=args.discover_port,
+                              interval=args.discover_interval)
+        discovery.start()
     try:
         while True:
-            flush_peers(store, peers, predictor, key=args.key)
+            live = peers
+            if discovery is not None:
+                known = {p.address for p in peers}
+                live = peers + [Peer(h, p) for h, p in discovery.live_peers()
+                                if (h, p) not in known]
+            flush_peers(store, live, predictor, key=args.key)
             time.sleep(args.interval)
     except KeyboardInterrupt:
         server.shutdown()
