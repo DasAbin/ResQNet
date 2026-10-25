@@ -1,8 +1,16 @@
 function verdict(){const m=runs.adaptive.metrics;
  $("#metrics").innerHTML=[["DELIVERED",`${m.delivered}/${m.created}`],["RATIO",Math.round(m.delivery_ratio*100)+"%"],["MEAN DELAY",m.mean_delay_ticks===null?"&mdash;":m.mean_delay_ticks.toFixed(1)+" ticks"],["ATTEMPTS",m.attempts],["FAILED",m.failed_attempts]].map(([k,v])=>`<div><b>${v}</b><span>${k}</span></div>`).join("");
  $("#verdict").textContent=m.delivered===m.created?"All messages reached their destination despite the outage.":"Some messages were still waiting or expired - extend the run or change the plan.";
- if(runs.snapshot_shortest){const b=runs.snapshot_shortest.metrics;
-  $("#cmp-table").innerHTML=`<table class="mono cmp-t"><tr><th></th><th>ADAPTIVE</th><th>BASELINE</th></tr><tr><td>delivered</td><td>${m.delivered}/${m.created}</td><td>${b.delivered}/${b.created}</td></tr><tr><td>mean delay</td><td>${m.mean_delay_ticks===null?"&mdash;":m.mean_delay_ticks.toFixed(1)}</td><td>${b.mean_delay_ticks===null?"&mdash;":b.mean_delay_ticks.toFixed(1)}</td></tr><tr><td>failed attempts</td><td>${m.failed_attempts}</td><td>${b.failed_attempts}</td></tr></table><p class="note">Same scenario, same seed. Synthetic only - the benchmark file explains why small runs prove no general superiority.</p>`}}
+ if(runs.compare){const all={adaptive:runs.adaptive.metrics,...Object.fromEntries(Object.entries(runs.compare).map(([k,v])=>[k,v.metrics]))};
+  const names=Object.keys(all),fmt=v=>v===null||v===undefined?"&mdash;":(+v).toFixed(1);
+  const row=(label,f)=>`<tr><td>${label}</td>${names.map(n=>`<td>${f(all[n])}</td>`).join("")}</tr>`;
+  $("#cmp-table").innerHTML=`<table class="mono cmp-t"><tr><th></th>${names.map(n=>`<th>${n.replace("_"," ").toUpperCase()}</th>`).join("")}</tr>`+
+   row("delivered",x=>`${x.delivered}/${x.created}`)+
+   row("mean delay",x=>fmt(x.mean_delay_ticks))+
+   row("attempts / delivered",x=>fmt(x.attempts_per_delivered))+
+   row("copies / delivered",x=>fmt(x.copies_per_delivered))+
+   row("failed attempts",x=>x.failed_attempts)+
+   `</table><p class="note">Same scenario, same seed, one run each - a demonstration, not the evaluation. The repeatable multi-seed table is in EXPERIMENTS.md (python3 experiments.py). Snapshot-shortest needs a currently-complete path, so it stalls whenever contacts are scheduled.</p>`}}
 function bar(v,max){const w=Math.min(100,Math.abs(v)/max*100);return`<div class="barrow"><div class="bar ${v<0?"neg":"pos"}" style="width:${w}%"></div></div>`}
 function renderWhy(d){const c=d.components,w=$("#why");
  if(d.policy==="snapshot_shortest"){w.innerHTML=`<p class="mono big">T+${d.tick} &middot; ${esc(d.id)} at ${esc(d.source)} &rarr; ${esc(d.chosen)}</p><p class="note">Baseline rule: pass to the neighbour with the fewest active hops left (${c.onward_hops}). It does not learn from past failures.</p>`;return}
