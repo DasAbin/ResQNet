@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import IntEnum
+import heapq
 import math
 import hashlib
 from typing import Iterable
@@ -113,6 +114,7 @@ class Simulator:
                  policy: str = "adaptive", spray_copies: int = 8) -> None:
         self.nodes = {n.id: n for n in nodes}
         self.links = list(links)
+        self._encountered = {frozenset((l.a, l.b)) for l in self.links if l.active}
         if not self.nodes or any(l.a not in self.nodes or l.b not in self.nodes for l in self.links):
             raise ValueError("link endpoint missing or no nodes")
         if policy not in ("adaptive", "adaptive_static", "snapshot_shortest",
@@ -150,21 +152,37 @@ class Simulator:
             self.events.append(dict(tick=message.created, type="created", id=message.id,
                                     node=message.source))
 
-    def _distance(self, start: str, end: str) -> float:
-        """Hop count on physical topology, including temporarily down links."""
+    def _distance(self, start: str, end: str) -> tuple[float, int]:
+        """Weighted hop count over the contact map (Dijkstra), plus how many
+        never-observed links the best path relies on.
+
+        A link that has come up at least once costs 1 hop; a link that exists
+        only on the plan but has never been observed up costs len(nodes) hops:
+        still routable, but weak evidence, so a live encounter path always
+        beats a never-seen 'direct' edge. Returns (weight, unobserved_links);
+        unreachable is (len(nodes)**2+1, 0), keeping arithmetic finite.
+        """
         if start == end:
-            return 0
-        frontier = {start}
-        visited = {start}
-        for hops in range(1, len(self.nodes) + 1):
-            frontier = {link.peer(n) for n in frontier for link in self.links
-                        if n in (link.a, link.b) and link.peer(n) not in visited}
-            if end in frontier:
-                return float(hops)
-            visited |= frontier
-            if not frontier:
-                break
-        return float(len(self.nodes) + 1)
+            return 0.0, 0
+        n = len(self.nodes)
+        best = {start: (0.0, 0)}
+        heap = [(0.0, 0, start)]
+        while heap:
+            d, un, u = heapq.heappop(heap)
+            if u == end:
+                return d, un
+            if (d, un) > best.get(u, (math.inf, 0)):
+                continue
+            for link in self.links:
+                if u not in (link.a, link.b):
+                    continue
+                seen = frozenset((link.a, link.b)) in self._encountered
+                nd, nun = d + (1.0 if seen else float(n)), un + (0 if seen else 1)
+                v = link.peer(u)
+                if (nd, nun) < best.get(v, (math.inf, 0)):
+                    best[v] = (nd, nun)
+                    heapq.heappush(heap, (nd, nun, v))
+        return float(n * n + 1), 0
 
     def _active_distance(self, start: str, end: str) -> float:
         """Current active-network hop count; infinity means no complete path."""
@@ -184,13 +202,16 @@ class Simulator:
 
     def _score(self, source: Node, peer: Node, message: Message, link: Link) -> tuple[float, dict]:
         """Score a candidate hop and keep the components so a UI can explain it."""
-        progress = self._distance(source.id, message.destination) - self._distance(peer.id, message.destination)
+        src_w, src_unenc = self._distance(source.id, message.destination)
+        peer_w, peer_unenc = self._distance(peer.id, message.destination)
+        progress = src_w - peer_w
         p_success = self.predictor.predict(link, source.battery)
         urgency = 1 + int(message.priority)
         load = len(peer.buffer) / max(1, peer.capacity)
         score = 2.0 * progress + score_hop(p_success, urgency, link.congestion,
                                            link.latency_ms, load)
-        return score, dict(progress=progress, p_success=round(p_success, 4),
+        return score, dict(progress=progress, src_unobserved=src_unenc,
+                           peer_unobserved=peer_unenc, p_success=round(p_success, 4),
                            urgency=urgency, congestion=link.congestion,
                            latency_ms=link.latency_ms, peer_load=round(load, 4),
                            total=round(score, 4))
@@ -227,6 +248,9 @@ class Simulator:
     def tick(self) -> None:
         self.tick_number += 1
         t = self.tick_number
+        for link in self.links:
+            if link.active:
+                self._encountered.add(frozenset((link.a, link.b)))
         for node in self.nodes.values():
             for mid, msg in list(node.buffer.items()):
                 if t - msg.created > msg.ttl or mid in self.delivered:
@@ -281,11 +305,18 @@ class Simulator:
                         components = dict(onward_hops=onward, total=round(score, 4))
                     else:
                         score, components = self._score(source, peer, msg, link)
-                    # Adaptive never hands a message to a node physically farther
-                    # from the destination: with a static topology and no mobility
-                    # model that can only strand it (e.g. on a leaf during an outage).
-                    forward_progress = (self.policy == "snapshot_shortest"
-                                        or components["progress"] > 0)
+                    # Adaptive never hands a message to a node whose route to the
+                    # destination looks worse than its own. On a tie it still hands
+                    # over when its own best route relies on a link that has never
+                    # come up and the peer's route is at least as observed: holding
+                    # behind an unproven edge has no evidential advantage over
+                    # carrying. The seen-set makes every handoff loop-free.
+                    forward_progress = (
+                        self.policy == "snapshot_shortest"
+                        or components["progress"] > 0
+                        or (components["progress"] == 0
+                            and components["src_unobserved"] > 0
+                            and components["peer_unobserved"] <= components["src_unobserved"]))
                     if (score > 0 and forward_progress) or peer.id == msg.destination:
                         explain[(msg.id, source.id, peer.id)] = components
                         candidates.append((-int(msg.priority), -score, msg.id, source.id,
