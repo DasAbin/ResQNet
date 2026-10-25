@@ -25,8 +25,11 @@ async function post(body){const r=await fetch("/v1/simulations",{method:"POST",h
  if(!r.ok)throw Error("API "+r.status+": "+(await r.text()).slice(0,160));return r.json()}
 async function run(){stop();readTables();$("#run").disabled=true;
  try{runs.adaptive=await post(scenarioFrom(cur,messages,changes,"adaptive"));
-  if($("#compare").checked)runs.snapshot_shortest=await post(scenarioFrom(cur,messages,changes,"snapshot_shortest"));
-  else delete runs.snapshot_shortest;
+  if($("#compare").checked){
+   runs.compare={};
+   for(const p of["snapshot_shortest","epidemic","spray_wait","prophet"])
+    runs.compare[p]=await post(scenarioFrom(cur,messages,changes,p));
+  }else delete runs.compare;
   selDecision=null;tick=0;$("#feed").innerHTML="";draw(0);renderModel();play();
  }catch(e){$("#verdict").textContent="Could not run: "+e.message}
  $("#run").disabled=false}
