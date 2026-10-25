@@ -45,18 +45,34 @@ def supply_run_relay():
                 messages=messages, changes=changes, ticks=60)
 
 
-def supply_run_wait():
-    """No vehicle: each shelter waits for one rare direct contact with base."""
+def supply_run_direct():
+    """Causal variant: the SAME vehicle round PLUS one rare late direct
+    contact per shelter. Every policy sees the identical contact trace;
+    direct_only refuses intermediate custody and must wait for the direct
+    contacts, so the delay difference is attributable to relaying alone."""
     nodes, messages = _supply_run_common()
-    links = [dict(a="SHELTER-N", b="BASE", active=False, latency_ms=30,
-                  bandwidth_bytes_per_tick=300, loss=0.2, reliability=0.9),
-             dict(a="SHELTER-S", b="BASE", active=False, latency_ms=30,
-                  bandwidth_bytes_per_tick=300, loss=0.2, reliability=0.9)]
-    changes = [dict(tick=50, a="SHELTER-N", b="BASE", active=True),
-               dict(tick=56, a="SHELTER-N", b="BASE", active=False),
-               dict(tick=50, a="SHELTER-S", b="BASE", active=True),
-               dict(tick=56, a="SHELTER-S", b="BASE", active=False)]
-    return dict(name="supply-run-wait", nodes=nodes, links=links,
+    link = dict(latency_ms=30, bandwidth_bytes_per_tick=300, loss=0.2,
+                congestion=0.1, reliability=0.9, active=False)
+    links = [dict(a="MULE", b="BASE", **link),
+             dict(a="MULE", b="SHELTER-N", **link),
+             dict(a="MULE", b="SHELTER-S", **link),
+             dict(a="SHELTER-N", b="BASE", **link),
+             dict(a="SHELTER-S", b="BASE", **link)]
+    changes = [  # vehicle round first; the direct contacts come only at the end
+        dict(tick=1, a="MULE", b="BASE", active=True),
+        dict(tick=11, a="MULE", b="BASE", active=False),
+        dict(tick=15, a="MULE", b="SHELTER-N", active=True),
+        dict(tick=26, a="MULE", b="SHELTER-N", active=False),
+        dict(tick=30, a="MULE", b="SHELTER-S", active=True),
+        dict(tick=41, a="MULE", b="SHELTER-S", active=False),
+        dict(tick=45, a="MULE", b="BASE", active=True),
+        dict(tick=50, a="SHELTER-N", b="BASE", active=True),
+        dict(tick=50, a="SHELTER-S", b="BASE", active=True),
+        dict(tick=56, a="MULE", b="BASE", active=False),
+        dict(tick=56, a="SHELTER-N", b="BASE", active=False),
+        dict(tick=56, a="SHELTER-S", b="BASE", active=False),
+    ]
+    return dict(name="supply-run-direct", nodes=nodes, links=links,
                 messages=messages, changes=changes, ticks=60)
 
 
@@ -77,4 +93,4 @@ def lossy_mesh():
                 changes=[], ticks=80)
 
 
-SCENARIOS = {s["name"]: s for s in (supply_run_relay(), supply_run_wait(), lossy_mesh())}
+SCENARIOS = {s["name"]: s for s in (supply_run_relay(), supply_run_direct(), lossy_mesh())}
