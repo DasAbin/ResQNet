@@ -65,7 +65,8 @@ class RunInput(StrictModel):
     links: list[LinkInput] = Field(max_length=2000)
     messages: list[MessageInput] = Field(max_length=MAX_MESSAGES)
     changes: list[LinkChange] = Field(default_factory=list, max_length=2000)
-    policy: Literal["adaptive", "snapshot_shortest", "epidemic", "spray_wait", "prophet"] = "adaptive"
+    policy: Literal["adaptive", "adaptive_static", "snapshot_shortest", "direct_only",
+                "epidemic", "spray_wait", "prophet"] = "adaptive"
     ticks: int = Field(default=20, ge=0, le=MAX_TICKS)
     seed: int = Field(default=0, ge=0, le=2**32-1)
 
@@ -208,6 +209,86 @@ def lab_observe(request: LabObserveInput, raw: Request):
     return {"observed_at": time.time(),
             "nodes": [_observe_node(n.id, n.db, request.transfers) for n in request.nodes],
             "warning": "Observed from local lab node stores, not simulated; synthetic data only."}
+
+
+class LabSendInput(StrictModel):
+    id: str = Field(min_length=1, max_length=64)
+    db: str = Field(min_length=1, max_length=400)
+    to: str = Field(min_length=1, max_length=64)
+    body: str = Field(min_length=1, max_length=3600)
+    priority: Priority = Priority.ROUTINE
+    ttl: float = Field(default=3600.0, gt=0, le=86400)
+
+
+class LabLifecycleInput(StrictModel):
+    id: str = Field(min_length=1, max_length=64)
+    db: str = Field(min_length=1, max_length=400)
+    request: str = Field(min_length=1, max_length=128)
+
+
+def _lab_store(node_id: str, db_path: str):
+    """Open a lab store only if it passes the same confinement as lab_observe."""
+    from node import Store
+    path = Path(db_path).resolve()
+    if not any(path == root or root in path.parents for root in _lab_roots()):
+        raise HTTPException(status_code=422, detail="path outside allowed lab roots")
+    return Store(str(path), node_id)
+
+
+def _loopback_only(raw: Request) -> None:
+    client_host = raw.client.host if raw.client else ""
+    if client_host not in ("127.0.0.1", "::1", "testclient"):
+        raise HTTPException(status_code=403, detail="lab control is loopback-only")
+
+
+@app.post("/v1/lab/send")
+def lab_send(request: LabSendInput, raw: Request):
+    """Inject a synthetic message into a local lab node's store (queued for its
+    node's next custody flush). Loopback-only lab aid; not a real dispatch."""
+    _loopback_only(raw)
+    from node import ProtocolError
+    message = {"id": f"msg-{int(time.time())}-{request.id}-{os.urandom(3).hex()}",
+               "source": request.id, "destination": request.to, "body": request.body,
+               "priority": int(request.priority), "expires_at": time.time() + request.ttl}
+    try:
+        result = _lab_store(request.id, request.db).receive(message)
+    except (ProtocolError, ValueError) as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return {"result": result, "id": message["id"],
+            "warning": "Synthetic lab injection only; not a real emergency service."}
+
+
+def _lab_lifecycle(request: LabLifecycleInput, make, verb: str):
+    from node import ProtocolError
+    store = _lab_store(request.id, request.db)
+    original = store.get(request.request)
+    if original is None:
+        raise HTTPException(status_code=404, detail="request id not in this node's store")
+    message = make(original, request.id)
+    if message is None:
+        raise HTTPException(status_code=422, detail=f"cannot {verb} a system message id")
+    try:
+        result = store.receive(message)
+    except (ProtocolError, ValueError) as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return {"result": result, "id": message["id"],
+            "warning": "Synthetic lab action only; not a real emergency service."}
+
+
+@app.post("/v1/lab/claim")
+def lab_claim(request: LabLifecycleInput, raw: Request):
+    """Operator claim on a request in a local lab store (accepted, not resolved)."""
+    _loopback_only(raw)
+    from node import make_claim
+    return _lab_lifecycle(request, make_claim, "claim")
+
+
+@app.post("/v1/lab/resolve")
+def lab_resolve(request: LabLifecycleInput, raw: Request):
+    """Operator resolution of a request in a local lab store."""
+    _loopback_only(raw)
+    from node import make_resolve
+    return _lab_lifecycle(request, make_resolve, "resolve")
 
 
 @app.get("/health")
