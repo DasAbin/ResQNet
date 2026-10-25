@@ -183,6 +183,8 @@ def _observe_node(node_id: str, db_path: str, transfer_limit: int) -> dict:
                 message = _json.loads(row["payload"])
                 out_delivered.append({"id": message["id"], "source": message["source"],
                                       "destination": message["destination"],
+                                      "priority": message.get("priority", 0),
+                                      "body_preview": message.get("body", "")[:120],
                                       "delivered_at": row["delivered_at"]})
             transfers = []
             if "transfer_log" in tables and transfer_limit:
