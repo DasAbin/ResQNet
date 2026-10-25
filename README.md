@@ -53,16 +53,29 @@ python3 node.py --id C --db /tmp/resq-c.db --port 9103
 To inject a synthetic message into A's local store, in a fourth shell:
 
 ```bash
-python3 - <<'PY'
-from node import Store
-import time
-print(Store('/tmp/resq-a.db','A').receive({'id':'demo-1','source':'A','destination':'C',
-      'body':'Synthetic SOS (not a real distress call)','priority':2,
-      'expires_at':time.time()+300}))
-PY
+python3 lab.py send --db /tmp/resq-a.db --node A --to C --body "Synthetic SOS (not a real distress call)" --priority 2
 ```
 
-Start A and B, then start C later to demonstrate buffering across an outage. In another shell, inspect `Store('/tmp/resq-c.db','C').status()` from Python. Each node also records a bounded observed transfer log (every received offer and every attempt, with the score components behind its peer choice) in its store; the dashboard's LIVE LAB panel renders it through `/v1/lab/observe`, so the same flood-rescue story can be watched on real processes instead of the simulator. Run `python3 -m unittest discover -v` to exercise protocol, restart, expiry, malformed input, authentication, wire-encryption, peer-ordering, and custody tests. This prototype has **no per-node identity beyond the shared lab key, no end-to-end or at-rest encryption (custody stores hold plaintext), replay rejection limited to byte-exact frames, no admission quotas, and no disaster-radio transport**. The shared key is lab-grade only: every lab node can decrypt every message, and one leaked key compromises every lab node. Bind only to localhost/private isolated labs, never public interfaces or real users.
+Start A and B, then start C later to demonstrate buffering across an outage. In another shell, inspect it with `python3 lab.py status --db /tmp/resq-c.db --node C`. Each node also records a bounded observed transfer log (every received offer and every attempt, with the score components behind its peer choice) in its store; the dashboard's LIVE LAB panel renders it through `/v1/lab/observe`, so the same flood-rescue story can be watched on real processes instead of the simulator. Run `python3 -m unittest discover -v` to exercise protocol, restart, expiry, malformed input, authentication, wire-encryption, peer-ordering, and custody tests. This prototype has **no per-node identity beyond the shared lab key, no end-to-end or at-rest encryption (custody stores hold plaintext), replay rejection limited to byte-exact frames, no admission quotas, and no disaster-radio transport**. The shared key is lab-grade only: every lab node can decrypt every message, and one leaked key compromises every lab node. Bind only to localhost/private isolated labs, never public interfaces or real users.
+
+### Two laptops on one network
+
+The same nodes run across two machines that share a network (same Wi-Fi, or a phone hotspot both join). This is ordinary TCP/IP: a real network test, not radio or offline mesh. It has been verified between processes on one machine; a two-physical-device run has not been performed yet.
+
+On the receiver laptop, find its LAN address (`ipconfig` on Windows, `ip addr` or `ifconfig` on macOS/Linux; say it is 192.168.1.20), then run:
+
+```bash
+python3 node.py --id B --db resq-b.db --host 0.0.0.0 --allow-container-bind --port 9202 --key class-demo-key
+```
+
+Allow the firewall prompt. On the sender laptop:
+
+```bash
+python3 node.py --id A --db resq-a.db --host 0.0.0.0 --allow-container-bind --port 9201 --peer 192.168.1.20:9202 --key class-demo-key
+python3 lab.py send --db resq-a.db --node A --to B --body "Synthetic test SOS" --priority 2
+```
+
+To show store-carry-forward, send while the receiver's node is stopped or its Wi-Fi is off: `python3 lab.py status --db resq-a.db --node A` shows the message pending. Reconnect, and the sender retries every 2 seconds until the receiver shows it delivered (`python3 lab.py status --db resq-b.db --node B`). Both laptops need the same `--key`; keep the test on a private network. On Windows, use `python` instead of `python3`.
 
 ## Comparative benchmark
 
