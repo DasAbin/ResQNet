@@ -15,7 +15,7 @@ function bar(v,max){const w=Math.min(100,Math.abs(v)/max*100);return`<div class=
 function renderWhy(d){const c=d.components,w=$("#why");
  if(d.policy==="snapshot_shortest"){w.innerHTML=`<p class="mono big">T+${d.tick} &middot; ${esc(d.id)} at ${esc(d.source)} &rarr; ${esc(d.chosen)}</p><p class="note">Baseline rule: pass to the neighbour with the fewest active hops left (${c.onward_hops}). It does not learn from past failures.</p>`;return}
  const rows=[["PROGRESS TOWARD TARGET",2*c.progress,`${c.progress} hop(s) closer`],
-  [`PRIORITY x LINK SUCCESS`,`${c.urgency*(2*c.p_success-1)}`,`P(success) ${(c.p_success*100).toFixed(0)}% x${c.urgency} priority`],
+  [`PRIORITY x LINK SUCCESS`,`${c.urgency*(2*c.p_success-1)}`,`${c.urgency} x (2 x ${(c.p_success*100).toFixed(1)}% - 1), so a 50% link would score 0`],
   ["CONGESTION",-0.7*c.congestion,`${(c.congestion*100).toFixed(0)}% busy`],
   ["LATENCY",-c.latency_ms/1000,`${c.latency_ms} ms`],
   ["RELAY QUEUE",-0.5*c.peer_load,`buffer ${(c.peer_load*100).toFixed(0)}% full`]];
@@ -32,4 +32,4 @@ function renderModel(){const m=runs.adaptive.metrics,w=$("#model");
  const sig=z=>1/(1+Math.exp(-Math.max(-30,Math.min(30,z))));
  const links=cur.links.map(l=>{const f=[1,l.reliability??1,l.loss??0,l.congestion??0,1,1/(1+(l.latency_ms??20)/100)];
   const p=sig(f.reduce((s,x,i)=>s+x*m.predictor_weights[i],0));return`<p class="note mono">P(success) ${l.a} &ndash; ${l.b}: ${(p*100).toFixed(0)}%</p>`}).join("");
- w.innerHTML=`<p class="note">Estimator weights after ${m.predictor_samples} observed transfer attempt(s):</p>${rows}<h4>PER-LINK ESTIMATE NOW</h4>${links}`}
+ w.innerHTML=`<p class="note">Estimator weights after ${m.predictor_samples} observed transfer attempt(s). Weights start from built-in priors, so after only a few attempts most of each value is the prior, not learning:</p>${rows}<h4>PER-LINK ESTIMATE NOW</h4>${links}`}
