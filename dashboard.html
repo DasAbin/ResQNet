@@ -7,6 +7,7 @@
  <div class="tag">SYNTHETIC SCENARIO &middot; NOT A LIVE INCIDENT</div>
 </header>
 <main>
+ <div class="col">
  <section class="panel stage">
   <div class="phead"><h2 id="scen-name"></h2><p id="scen-story"></p></div>
   <svg id="map" viewBox="0 0 700 420" role="img" aria-label="Report relay map"></svg>
@@ -19,12 +20,6 @@
   </div>
   <div class="legend mono"><span><i class="sw on"></i>LINK UP</span><span><i class="sw off"></i>LINK DOWN</span><span><i class="sw sos"></i>HIGH</span><span><i class="sw med"></i>REPORT</span><span><i class="sw ok"></i>CHECK-IN</span></div>
  </section>
- <aside class="side">
-  <div class="panel"><h3>OUTCOME</h3><div id="metrics" class="metrics mono"></div><p class="note" id="verdict"></p>
-   <div class="cmp"><label class="mono"><input type="checkbox" id="compare"> COMPARE ALL FORWARDING POLICIES</label><div id="cmp-table"></div></div></div>
-  <div class="panel"><h3>WHY THIS HOP?</h3><div id="why"><p class="note">Run the scenario. Each time a device chooses where to pass a message, this panel explains the choice.</p></div></div>
-  <div class="panel"><h3>WHAT THE MODEL LEARNED</h3><div id="model"><p class="note">The relay-choice estimator updates after every transfer attempt.</p></div></div>
- </aside>
  <section class="panel setup">
   <h3>SCENARIO SETUP</h3>
   <label class="mono">PRESET <select id="preset"></select></label>
@@ -35,10 +30,17 @@
   <div class="runrow"><button id="run">&#9654; RUN SIMULATION</button></div>
   <p class="note">Runs the local <code>/v1/simulations</code> API. Every packet on the map and every line in the log comes from that response. No real locations, people or distress traffic.</p>
  </section>
+ </div>
+ <aside class="side">
+  <div class="panel"><h3>OUTCOME</h3><div id="metrics" class="metrics mono"></div><p class="note" id="verdict"></p>
+   <div class="cmp"><label class="mono"><input type="checkbox" id="compare"> COMPARE ALL FORWARDING POLICIES</label><div id="cmp-table"></div></div></div>
+  <div class="panel"><h3>WHY THIS HOP?</h3><div id="why"><p class="note">Run the scenario. Each time a device chooses where to pass a message, this panel explains the choice.</p></div></div>
+  <div class="panel"><h3>WHAT THE MODEL LEARNED</h3><div id="model"><p class="note">The relay-choice estimator updates after every transfer attempt.</p></div></div>
  <section class="panel log">
   <h3>EVENT LOG</h3><div id="feed" class="feed mono" aria-live="polite"><div class="row"><span class="t">T+0</span><p>Awaiting run.</p></div></div>
   <h3>HOW THIS SOLVES IT</h3><p class="note">When floods cut links, phones cannot reach the camp directly. ResQNet stores each message, carries it on any device that moves, and forwards it when a link returns &mdash; store, carry, forward. It targets delayed field reports and supply coordination, not urgent rescue: if help is close enough to hear you, shouting beats any protocol, and real offline device-to-device chat already exists elsewhere. An online model scores each possible next hop from observed successes, so queued traffic picks the relay most likely to get through. The same custody protocol also runs between separate OS processes over TCP (<code>node.py</code>, tested on loopback); this map shows the simulator, not field radios. The LIVE LAB panel below shows the real node processes instead, labelled OBSERVED.</p>
  </section>
+ </aside>
  <section class="panel live" id="live-lab">
   <h3>LIVE LAB <span class="obs mono">OBSERVED &middot; NOT SIMULATED</span></h3>
   <p class="note">Real custody events read straight from running <code>node.py</code> lab nodes' local stores on THIS machine via <code>/v1/lab/observe</code>. If a store cannot be read, the card says so &mdash; nothing here is filled in. Stores on other devices are only visible when this machine can read their files, so for two-device tests run this dashboard where at least one node runs and read the rest from the nodes' own output.</p>
